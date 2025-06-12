@@ -49,7 +49,7 @@ class MDSimulation:
         self.config = config
         log_info(logger, f"Initializing MDSimulation with config file: {self.config['info']['simulation_id']}")
         
-        if config['info']['use_plinder_index'] == True:
+        if config['info'].get('use_plinder_index', False) == True:
             PLINDEX = query_index(columns = ['system_id','ligand_ccd_code','ligand_id'], splits=["*"])
             self.plindex = PLINDEX[PLINDEX['system_id'] == self.config['info']['system_id']]
         else:
@@ -99,11 +99,11 @@ class MDSimulation:
         trajectory_dir = os.path.join(self.config['paths']['output_dir'], 'trajectories')
         os.makedirs(trajectory_dir, exist_ok=True)
         self.config['paths']['trajectories'] = {}
-        self.config['paths']['trajectories']['warmup_trajectory_filepath'] = os.path.join(trajectory_dir, f"{self.config['info']['system_id']}_warmup_trajectory.dcd")
-        self.config['paths']['trajectories']['backbone_removal_trajectory_filepath'] = os.path.join(trajectory_dir, f"{self.config['info']['system_id']}_backbone_removal_trajectory.dcd")
-        self.config['paths']['trajectories']['nvt_trajectory_filepath'] = os.path.join(trajectory_dir, f"{self.config['info']['system_id']}_nvt_trajectory.dcd")
-        self.config['paths']['trajectories']['npt_trajectory_filepath'] = os.path.join(trajectory_dir, f"{self.config['info']['system_id']}_npt_trajectory.dcd")
-        self.config['paths']['trajectories']['production_trajectory_filepath'] = os.path.join(trajectory_dir, f"{self.config['info']['system_id']}_production_trajectory.dcd")
+        self.config['paths']['trajectories']['warmup_trajectory_filepath'] = os.path.join(trajectory_dir, f"{self.config['info']['system_id']}_warmup_trajectory.xtc")
+        self.config['paths']['trajectories']['backbone_removal_trajectory_filepath'] = os.path.join(trajectory_dir, f"{self.config['info']['system_id']}_backbone_removal_trajectory.xtc")
+        self.config['paths']['trajectories']['nvt_trajectory_filepath'] = os.path.join(trajectory_dir, f"{self.config['info']['system_id']}_nvt_trajectory.xtc")
+        self.config['paths']['trajectories']['npt_trajectory_filepath'] = os.path.join(trajectory_dir, f"{self.config['info']['system_id']}_npt_trajectory.xtc")
+        self.config['paths']['trajectories']['production_trajectory_filepath'] = os.path.join(trajectory_dir, f"{self.config['info']['system_id']}_production_trajectory.xtc")
 
         # State Data Reporter files
         state_data_reporter_dir = os.path.join(self.config['paths']['output_dir'], 'state_data_reporters')
