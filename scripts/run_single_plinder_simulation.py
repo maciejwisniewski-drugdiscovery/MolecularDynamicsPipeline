@@ -13,9 +13,6 @@ from dynamics_pipeline.data.plinder import load_plinder_ids, create_system_confi
 
 random.seed(42)
 
-# VARIABLES
-PLINDER_DIR = os.getenv('PLINDER_DIR')
-OUTPUT_DIR = os.getenv('OUTPUT_DIR')
 
 # Setup global logger
 logger = setup_logger(name="plinder_dynamics", log_level=logging.INFO)
