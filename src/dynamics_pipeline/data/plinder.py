@@ -4,7 +4,8 @@ from typing import Optional
 from pathlib import Path
 from plinder.core.scores import query_index
 import yaml
-
+from dotenv import load_dotenv
+load_dotenv()
 
 class PlinderFilters:
     def __init__(self, filters: Path):
@@ -35,7 +36,21 @@ def load_plinder_ids(filters: Optional[str] = None):
 def create_system_config(template_config: Path, system_id: str, output_dir: Path):
     with open(template_config, 'r') as f:
         config = yaml.safe_load(f)
-    config['system_id'] = system_id
-    with open(os.path.join(output_dir, f'{system_id}.yaml'), 'w') as f:
-        yaml.dump(config, f)
-    return os.path.join(output_dir, f'{system_id}.yaml')
+
+    config['info']['system_id'] = system_id
+    if config['info']['bound_state'] == True:
+        config['info']['simulation_id'] = f"{system_id}_simulation_bound_state"
+    else:
+        config['info']['simulation_id'] = f"{system_id}_simulation_unbound_state"
+
+    system_config_filepath = os.path.join(output_dir, config['info']['simulation_id'], 'config.yaml')
+
+    if not os.path.exists(system_config_filepath):
+        config['paths']['raw_protein_files'] = [os.getenv('PLINDER_MOUNT'),os.getenv('PLINDER_RELEASE'),os.getenv('PLINDER_ITERATION'),'systems',system_id,'protein.pdb']
+        config['paths']['raw_ligand_files'] = [os.getenv('PLINDER_MOUNT'),os.getenv('PLINDER_RELEASE'),os.getenv('PLINDER_ITERATION'),'systems',system_id,'ligand.sdf']
+        config['paths']['output_dir'] = os.path.join(output_dir, config['info']['simulation_id'])
+
+        with open(system_config_filepath, 'w') as f:
+            yaml.dump(config, f)
+
+    return system_config_filepath

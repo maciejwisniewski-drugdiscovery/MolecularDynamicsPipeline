@@ -1,7 +1,7 @@
 info:
   system_id: False
   simulation_id: False
-
+  use_plinder_index: True
 # Preprocessing parameters
 preprocessing:
   process_protein: true             # Process the protein with PDBFixer  

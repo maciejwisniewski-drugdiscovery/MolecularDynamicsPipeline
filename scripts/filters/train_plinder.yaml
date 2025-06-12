@@ -1,0 +1,12 @@
+filters:
+  - column: ligand_is_proper
+    operator: "=="
+    value: True
+  - column: system_num_protein_chains
+    operator: "=="
+    value: 1
+  - column: system_has_binding_affinity
+    operator: "=="
+    value: True
+columns: ['system_id','ligand_ccd_code','entry_pdb_id','ligand_id']
+splits: ['train']
