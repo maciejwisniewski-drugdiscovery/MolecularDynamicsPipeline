@@ -53,7 +53,7 @@ def run_simulation(config):
     
 def single_simulation():
     parser = argparse.ArgumentParser(description='Run Molecular Dynamics Simulation with OpenMM')
-    parser.add_argument('--config_template', type=str, required=False, help='Path to config template file', default='config/simulation_parameters.yaml')
+    parser.add_argument('--config_template', type=str, required=False, help='Path to config template file', default='config/plinder_parameters.yaml')
     parser.add_argument('--filters', type=str, required=False, help='Filters to apply to the PLINDER systems', default='scripts/filters/train_plinder.yaml')
     parser.add_argument('--output_dir', type=str, required=False, help='Output directory', default=None)
     parser.add_argument('--overwrite', type=bool, required=False, help='Overwrite existing simulation', default=False)
