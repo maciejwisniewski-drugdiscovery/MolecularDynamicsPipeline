@@ -49,7 +49,7 @@ def create_system_config(template_config: Path, system_id: str, output_dir: Path
         config['paths']['raw_protein_files'] = [os.getenv('PLINDER_MOUNT'),os.getenv('PLINDER_RELEASE'),os.getenv('PLINDER_ITERATION'),'systems',system_id,'protein.pdb']
         config['paths']['raw_ligand_files'] = [os.getenv('PLINDER_MOUNT'),os.getenv('PLINDER_RELEASE'),os.getenv('PLINDER_ITERATION'),'systems',system_id,'ligand.sdf']
         config['paths']['output_dir'] = os.path.join(output_dir, config['info']['simulation_id'])
-
+        os.makedirs(os.path.join(output_dir, config['info']['simulation_id']), exist_ok=True)
         with open(system_config_filepath, 'w') as f:
             yaml.dump(config, f)
 

@@ -67,11 +67,9 @@ def single_simulation():
     plinder_ids = load_plinder_ids(args.filters)
 
     # Run Simulation
-    for plinder_id in plinder_ids:
-        os.makedirs(os.path.join(args.output_dir, plinder_id), exist_ok=True)
-                
+    for plinder_id in plinder_ids:                
         system_config_filepath = create_system_config(template_config = args.config_template, system_id = plinder_id, output_dir = args.output_dir)
-        
+
         with open(system_config_filepath, 'r') as f:
             config = yaml.safe_load(f)
         run_simulation(config)
