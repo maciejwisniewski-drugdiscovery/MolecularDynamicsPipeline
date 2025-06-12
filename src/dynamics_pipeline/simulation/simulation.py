@@ -18,7 +18,7 @@ from openmm.app.modeller import Modeller
 from openmmforcefields.generators import SystemGenerator
 
 from plinder.core.scores import query_index
-from dynamics_pipeline.utils.errors import NoneLigandError, NoneConformerError, ligand_reader_checker
+from dynamics_pipeline.utils.errors import NoneLigandError, NoneConformerError
 from dynamics_pipeline.utils.logger import setup_logger, log_info, log_error, log_warning, log_debug
 from dynamics_pipeline.data.small_molecule import load_molecule_to_openmm
 
@@ -220,13 +220,12 @@ class MDSimulation:
             openff_molecule.partial_charges.magnitude = np.array(self.config['ligand_info']['ligand_charges'][input_name])
         else:
             try:
-                openff_molecule.assign_partial_charges(partial_charge_method="am1bcc", use_conformers=openff_molecule.conformers)
-                self.config['ligand_info']['ligand_charges'][input_name] = {'charges': openff_molecule.partial_charges.magnitude.tolist(), 'method': 'am1bcc'}
+                openff_molecule.assign_partial_charges(partial_charge_method="gasteiger", use_conformers=openff_molecule.conformers)
+                self.config['ligand_info']['ligand_charges'][input_name] = {'charges': openff_molecule.partial_charges.magnitude.tolist(), 'method': 'gasteiger'}
             except:
                 openff_molecule.assign_partial_charges(partial_charge_method="gasteiger")
                 self.config['ligand_info']['ligand_charges'][input_name] = {'charges': openff_molecule.partial_charges.magnitude.tolist(), 'method': 'gasteiger'}
 
-        ligand_reader_checker(openff_molecule, rdkit_molecule)
         openff_molecule_topology = openff_molecule.to_topology()
         openff_molecule_positions = openff_molecule.conformers[0].to("nanometers")
 
@@ -311,7 +310,6 @@ class MDSimulation:
                 )
                 a=1
                 with open(self.config['paths']['init_topology_filepath'], 'w') as outfile:
-                    a=1
                     app.PDBxFile.writeFile(complex.topology, complex.positions, outfile)
             
                 system = system_generator.create_system(complex.topology, molecules = openff_molecules)

@@ -1,8 +1,8 @@
 info:
   system_id: False
   simulation_id: False
-  bound_state: True
-
+  bound_state: False
+  
 # Preprocessing parameters
 preprocessing:
   process_protein: true             # Process the protein with PDBFixer  
@@ -28,7 +28,7 @@ simulation_params:
   backbone_restraint_force: 100.0     # kcal/mol/A^2
   platform:
     type: "CUDA"
-    devices: '0'
+    devices: "0"
   warmup:
     init_temp: 50.0                   # K - the starting temperature
     final_temp: 300.0                 # K - the final temperature
@@ -69,7 +69,7 @@ simulation_params:
     pressure: 1.0
     friction: 1.0
     time_step: 2.0
-    nsteps: 500000
+    nsteps: 5000000
     checkpoint_interval: 1000
     trajectory_interval: 1000
     state_data_reporter_interval: 1000
