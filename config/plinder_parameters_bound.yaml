@@ -29,7 +29,7 @@ simulation_params:
   backbone_restraint_force: 100.0     # kcal/mol/A^2
   platform:
     type: "CUDA"
-    devices: None
+    devices: '0'
   warmup:
     init_temp: 50.0                   # K - the starting temperature
     final_temp: 300.0                 # K - the final temperature
