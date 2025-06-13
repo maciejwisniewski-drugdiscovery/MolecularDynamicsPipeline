@@ -181,9 +181,11 @@ def fix_autodock_output_ligand(reference_sdf_filepath: str, reference_pdbqt_file
     return ref_sdf_mol
 
 
-def fix_molecule_with_pybel(input_filepath: str, output_dir: str):
+def fix_molecule_with_pybel(input_filepath: str, output_dir: str, overwrite: bool = False):
     output_name = os.path.splitext(os.path.basename(input_filepath))[0]
     output_path = os.path.join(output_dir, f"{output_name}.sdf")
+    if os.path.exists(output_path) and not overwrite:
+        return output_path
     pybel_molecule = next(pybel.readfile('sdf', input_filepath))
     pybel_molecule.removeh()
     pybel_molecule.addh()
