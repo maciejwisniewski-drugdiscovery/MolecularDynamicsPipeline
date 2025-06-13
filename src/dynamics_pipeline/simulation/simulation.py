@@ -344,6 +344,8 @@ class MDSimulation:
                 a=1
                 with open(self.config['paths']['init_topology_filepath'], 'w') as outfile:
                     app.PDBxFile.writeFile(complex.topology, complex.positions, outfile)
+                with open(self.config['paths']['init_topology_filepath'].replace('.cif', '.pdb'), 'w') as outfile:
+                    app.PDBFile.writeFile(complex.topology, complex.positions, outfile)
             
                 system = system_generator.create_system(complex.topology, molecules = openff_molecules)
                 with open(self.config['paths']['init_system_filepath'], 'w') as outfile:
