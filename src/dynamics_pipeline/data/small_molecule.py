@@ -99,17 +99,6 @@ def match_atoms_based_on_coords(ref_coords: list, coords: list):
     return atom_map
 
 
-def neutralizeRadicals(mol):
-    Chem.AddHs(mol)
-    editable_mol = Chem.RWMol(mol)
-    for atom in editable_mol.GetAtoms():
-        atom.SetNumRadicalElectrons(0)
-        atom.SetFormalCharge(0)
-    mol = editable_mol.GetMol()
-    #Chem.RemoveHs(mol)
-    return mol
-
-
 def fix_autodock_output_ligand(reference_sdf_filepath: str, reference_pdbqt_filepath: str, docked_sdf_filepath: str, output_sdf_filepath: str, sanitize: bool = True):
     '''
     This function is used to fix the autodock output ligand.
