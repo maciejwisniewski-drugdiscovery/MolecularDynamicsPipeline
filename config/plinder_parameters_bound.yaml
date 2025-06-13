@@ -70,7 +70,7 @@ simulation_params:
     pressure: 1.0
     friction: 1.0
     time_step: 2.0
-    nsteps: 500000
+    nsteps: 5000000
     checkpoint_interval: 1000
     trajectory_interval: 1000
     state_data_reporter_interval: 1000

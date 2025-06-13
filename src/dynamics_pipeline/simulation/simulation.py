@@ -15,13 +15,14 @@ from openbabel import pybel
 from openmm import app, unit
 from openmm import Platform, XmlSerializer, LangevinIntegrator, CustomExternalForce, MonteCarloBarostat
 from openmm.app.modeller import Modeller
+from openmm.app import ForceField
 from openmmforcefields.generators import SystemGenerator
 
 from plinder.core.scores import query_index
 from dynamics_pipeline.utils.errors import NoneLigandError, NoneConformerError
 from dynamics_pipeline.utils.logger import setup_logger, log_info, log_error, log_warning, log_debug
 from dynamics_pipeline.data.small_molecule import load_molecule_to_openmm
-
+from dynamics_pipeline.data.biomolecules import fix_biomolecule_with_pdb2pqr
 
 logger = setup_logger(name="plinder_dynamics", log_level=logging.INFO)
 
@@ -77,7 +78,8 @@ class MDSimulation:
 
         # Create simulation output directory if it doesn't exist
         os.makedirs(self.config['paths']['output_dir'], exist_ok=True)
-    
+
+
     def set_files_info(self):
         # Initial files
         self.config['paths']['init_complex_filepath'] = os.path.join(self.config['paths']['output_dir'], f"{self.config['info']['system_id']}_init_complex.cif")
@@ -135,6 +137,7 @@ class MDSimulation:
         self.config['paths']['topologies']['npt_topology_filepath'] = os.path.join(topology_dir, f"{self.config['info']['system_id']}_npt_topology.cif")
         self.config['paths']['topologies']['production_topology_filepath'] = os.path.join(topology_dir, f"{self.config['info']['system_id']}_production_topology.cif")
 
+
     def set_ligand_info(self):
         """Set ligand information to config"""
 
@@ -159,6 +162,7 @@ class MDSimulation:
         if self.config['ligand_info'].get('ligand_charges', None) is None:
             self.config['ligand_info']['ligand_charges'] = {}
 
+
     def set_protein_info(self):
         """Set protein information to config"""
         if self.config.get('protein_info', None) is None:
@@ -172,7 +176,8 @@ class MDSimulation:
         
         if self.config['protein_info'].get('protein_formats', None) is None:
             self.config['protein_info']['protein_formats'] = [os.path.splitext(os.path.basename(protein_file))[1] for protein_file in self.config['paths']['raw_protein_files']]
-    
+
+
     def set_simulation_info(self):
         """Set simulation information to config"""
         if self.config.get('simulation_params', None) is None:
@@ -187,9 +192,11 @@ class MDSimulation:
             'production': 'Done' if os.path.exists(self.config['paths']['topologies']['production_topology_filepath']) else 'Not Done'
         }
 
+
     def update_simulation_status(self, stage: str, status: str):
         assert stage in self.config['info']['simulation_status'], f"Stage {stage} not found in config!"
         self.config['info']['simulation_status'][stage] = status if os.path.exists(self.config['paths']['topologies'][f'{stage}_topology_filepath']) else 'Not Done'
+
 
     def get_platform(self):
         self.platform = Platform.getPlatformByName(self.config['simulation_params']['platform']['type'])
@@ -197,7 +204,8 @@ class MDSimulation:
             self.platform.setPropertyDefaultValue('Precision', 'mixed')
             self.platform.setPropertyDefaultValue('CudaDeviceIndex', self.config['simulation_params']['platform']['devices'])
 
-    def process_protein(self, input_filepath: str, ph: float = 7.0):
+
+    def process_protein_with_pdbfixer(self, input_filepath: str, ph: float = 7.4):
         """Process the protein with PDBFixer"""
         fixer = pdbfixer.PDBFixer(input_filepath)
         fixer.findMissingResidues()
@@ -206,6 +214,25 @@ class MDSimulation:
         fixer.findMissingAtoms()  # find missing heavy atoms
         fixer.addMissingHydrogens(ph)
         fixer.addMissingAtoms()  # add missing atoms and residues
+        
+        output_filepath = os.path.join(self.config['paths']['output_dir'], os.path.basename(input_filepath).replace('.pdb', '_pdbfixer.pdb'))
+        app.PDBFile.writeFile(fixer.topology, fixer.positions, open(output_filepath, 'w'))
+        return fixer, output_filepath
+        
+
+    def process_protein_with_pdb2pqr(self, input_filepath: str, output_pdb_filepath: str, ph: float = 7.4):
+        fix_biomolecule_with_pdb2pqr(receptor_pdb_filepath = input_filepath,
+                                     output_pdb_filepath = output_pdb_filepath,
+                                     ph = ph)
+        return output_pdb_filepath
+
+
+    def process_protein(self, input_filepath: str, ph: float = 7.4):
+        output_filepath = os.path.join(self.config['paths']['output_dir'], os.path.basename(input_filepath).replace('.pdb', '_fixed.pdb'))
+        if not os.path.exists(output_filepath):
+            fixer, fixer_filepath = self.process_protein_with_pdbfixer(input_filepath, ph)
+            output_filepath = self.process_protein_with_pdb2pqr(input_filepath=fixer_filepath, output_pdb_filepath=output_filepath, ph=ph)
+        fixer = pdbfixer.PDBFixer(output_filepath)
         return fixer
 
 
@@ -246,6 +273,8 @@ class MDSimulation:
                     complex = Modeller(protein_pdbfixer.topology, protein_pdbfixer.positions)
                 else:
                     complex.add(protein_pdbfixer.topology, protein_pdbfixer.positions) 
+        else:
+            complex = app.pdbxfile.PDBxFile(self.config['paths']['init_topology_filepath'])
         
         openff_molecules = []        
         if self.config['preprocessing']['process_ligand'] == True:
@@ -278,11 +307,15 @@ class MDSimulation:
 
         return complex, openff_molecules
 
+
     def set_system(self):
         if all([os.path.exists(self.config['paths']['init_system_filepath']),
                 os.path.exists(self.config['paths']['init_system_with_posres_filepath']),
                 os.path.exists(self.config['paths']['init_topology_filepath'])]):
-            complex = app.pdbxfile.PDBxFile(self.config['paths']['init_topology_filepath'])
+            if self.config['paths']['init_topology_filepath'].endswith('.cif'):
+                complex = app.pdbxfile.PDBxFile(self.config['paths']['init_topology_filepath'])
+            elif self.config['paths']['init_topology_filepath'].endswith('.pdb'):
+                complex = app.pdbfile.PDBFile(self.config['paths']['init_topology_filepath'])
             complex = Modeller(complex.topology, complex.positions)
             system = XmlSerializer.deserialize(open(self.config['paths']['init_system_filepath']).read())
             system_with_posres = XmlSerializer.deserialize(open(self.config['paths']['init_system_with_posres_filepath']).read())
@@ -323,6 +356,7 @@ class MDSimulation:
         self.model = complex
         self.system = system
         self.system_with_posres = system_with_posres
+
 
     def set_reporters(self, simulation, 
                       checkpoint_filepath: str,
@@ -370,7 +404,8 @@ class MDSimulation:
             )
         )
         return simulation
-    
+
+
     def warmup(self):
         """Run warmup simulation with gradual temperature increase.
         

@@ -7,11 +7,12 @@ from openff.toolkit.topology import Molecule
 from openbabel import pybel
 import logging
 from pathlib import Path
-from typing import Union
+from typing import Union, List
 import numpy as np
 import biotite
 import biotite.structure.io.pdbx as pdbx
 import biotite.structure.io.pdb as pdb
+from openbabel import pybel
 from dynamics_pipeline.utils.logger import setup_logger, log_info, log_error, log_warning, log_debug
 import biotite.structure as struc
 
@@ -180,13 +181,24 @@ def fix_autodock_output_ligand(reference_sdf_filepath: str, reference_pdbqt_file
     return ref_sdf_mol
 
 
+def fix_molecule_with_pybel(input_filepath: str, output_dir: str):
+    output_name = os.path.splitext(os.path.basename(input_filepath))[0]
+    output_path = os.path.join(output_dir, f"{output_name}.sdf")
+    pybel_molecule = next(pybel.readfile('sdf', input_filepath))
+    pybel_molecule.removeh()
+    pybel_molecule.addh()
+    pybel_molecule.removeh()
+    pybel_molecule.write('sdf', output_path)
+    return output_path
+
 def make_unbound(
     mol: Mol, 
     ref_structure: Union[struc.AtomArray, struc.AtomArrayStack, Path], 
     offset: float = 8.0,
     max_dist: float = 30.0,
     clash_threshold: float = 3.0,
-    max_retries: int = 50
+    max_retries: int = 50,
+    max_dist_between_ligands: float = 10.0
 ) -> Union[Mol, None]:
     """
     Generates an unbound conformation of a ligand with respect to a reference protein structure.
@@ -269,3 +281,91 @@ def make_unbound(
 
     log_error(logger, f"Failed to find a clash-free position after {max_retries} attempts.")
     return None
+
+def create_unbound_ligand_files(ligand_filepaths: List[str],
+                                ref_protein: Union[struc.AtomArray, struc.AtomArrayStack, Path],
+                                output_dir: str,
+                                min_distance: float = 10.0,
+                                max_placement_attempts: int = 50,
+                                max_retries: int = 50) -> List[str]:
+    """
+    Create unbound conformations for multiple ligands, ensuring they are properly spaced.
+    
+    Parameters:
+    -----------
+    ligand_filepaths : List[str]
+        List of paths to ligand files (supported formats: .sdf, .mol2)
+    ref_protein : Union[struc.AtomArray, struc.AtomArrayStack, Path]
+        Reference protein structure to place ligands around
+    output_dir : str
+        Directory to save the generated conformations
+    
+    Returns:
+    --------
+    List[str]
+        List of paths to the saved unbound ligand conformations
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    saved_conformations = []
+    placed_ligand_coords = []  # List to store centroids of placed ligands
+    
+    for ligand_path in ligand_filepaths:
+        file_format = os.path.splitext(ligand_path)[1].lower()
+        if file_format not in ['.sdf', '.mol2']:
+            log_warning(logger, f"Unsupported file format for {ligand_path}. Skipping.")
+            continue
+            
+        try:
+            ligand_supplier = Chem.SDMolSupplier(ligand_path)
+            ligand_mol = ligand_supplier[0]
+            if ligand_mol is None:
+                log_error(logger, f"Failed to load ligand from {ligand_path}")
+                continue
+                            
+            # Try to generate unbound conformation up to 10 times
+            placed_successfully = False
+            
+            for attempt in range(max_placement_attempts):
+                # Generate unbound conformation
+                unbound_mol = make_unbound(ligand_mol, ref_protein, max_retries=max_retries)
+                if unbound_mol is None:
+                    continue
+                    
+                # Get centroid of new ligand
+                conf = unbound_mol.GetConformer()
+                coords = conf.GetPositions()
+                centroid = coords.mean(axis=0)
+                
+                # Check distance to all previously placed ligands
+                too_close = False
+                for placed_centroid in placed_ligand_coords:
+                    distance = np.linalg.norm(centroid - placed_centroid)
+                    if distance < max_dist_between_ligands:  # 10 Å minimum distance
+                        too_close = True
+                        break
+                
+                if not too_close:
+                    placed_successfully = True
+                    placed_ligand_coords.append(centroid)
+                    
+                    # Save the conformation
+                    output_name = os.path.splitext(os.path.basename(ligand_path))[0]
+                    output_path = os.path.join(output_dir, f"{output_name}_unbound{file_format}")
+                    
+                    
+                    writer = Chem.SDWriter(output_path)
+                    writer.write(unbound_mol)
+                    writer.close()
+                    
+                    saved_conformations.append(output_path)
+                    log_info(logger, f"Successfully placed and saved unbound conformation for {ligand_path}")
+                    break
+            
+            if not placed_successfully:
+                log_error(logger, f"Failed to place {ligand_path} after {max_placement_attempts} attempts")
+                
+        except Exception as e:
+            log_error(logger, f"Error processing {ligand_path}: {str(e)}")
+            continue
+    
+    return saved_conformations
