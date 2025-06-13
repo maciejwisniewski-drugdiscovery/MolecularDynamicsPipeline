@@ -35,7 +35,7 @@ def load_molecule_to_openmm(input_filepath: str, input_format: str):
             openff_molecule = Molecule.from_file(input_filepath)
             return openff_molecule
         except Exception as e:
-            log_error(logger, f"Failed to load SDF file: {input_filepath} with error: {e}")
+            log_warning(logger, f"Failed to load SDF file: {input_filepath} with error: {e}")
         try:
             suppl = Chem.ForwardSDMolSupplier(input_filepath,sanitize=False,removeHs=True)
             rdkit_molecule = next(suppl)
@@ -44,7 +44,7 @@ def load_molecule_to_openmm(input_filepath: str, input_format: str):
             openff_molecule = Molecule.from_rdkit(rdkit_molecule, allow_undefined_stereo=True)
             return openff_molecule
         except Exception as e:
-            log_error(logger, f"Failed to load SDF file: {input_filepath} with error: {e}")
+            log_warning(logger, f"Failed to load SDF file: {input_filepath} with error: {e}")
         try:
             # Load SDF File to PyBel
             pybel_molecule = next(pybel.readfile('sdf', input_filepath))
@@ -66,13 +66,13 @@ def load_molecule_to_openmm(input_filepath: str, input_format: str):
             openff_molecule = Molecule.from_file(input_filepath)
             return openff_molecule
         except:
-            log_error(logger, f"Failed to load MOL2 file: {input_filepath}")
+            log_warning(logger, f"Failed to load MOL2 file: {input_filepath}")
         try:
             rdkit_molecule = Chem.MolFromMol2File(input_filepath,sanitize=False,removeHs=True)
             openff_molecule = Molecule.from_rdkit(rdkit_molecule, allow_undefined_stereo=True)
             return openff_molecule
         except:
-            log_error(logger, f"Failed to load MOL2 file: {input_filepath}")
+            log_warning(logger, f"Failed to load MOL2 file: {input_filepath}")
         try:
             pybel_molecule = next(pybel.readfile('mol2', input_filepath))
             pybel_molecule.removeh()
@@ -81,7 +81,7 @@ def load_molecule_to_openmm(input_filepath: str, input_format: str):
             openff_molecule = Molecule.from_rdkit(rdkit_molecule, allow_undefined_stereo=True)
             return openff_molecule
         except:
-            log_error(logger, f"Failed to load MOL2 file: {input_filepath}")
+            log_warning(logger, f"Failed to load MOL2 file: {input_filepath}")
             raise ValueError(f"Failed to load MOL2 file: {input_filepath}")
     return
 
@@ -108,14 +108,14 @@ def fix_autodock_output_ligand(reference_sdf_filepath: str, reference_pdbqt_file
     ref_sdf_mol.removeh()
     ref_sdf_mol = Chem.MolFromMol2Block(ref_sdf_mol.write('mol2'), sanitize=False, removeHs=True)
     if ref_sdf_mol is None:
-        log_error(logger, f"Failed to load reference SDF file: {reference_sdf_filepath}")
+        log_warning(logger, f"Failed to load reference SDF file: {reference_sdf_filepath}")
         raise ValueError(f"Failed to load reference SDF file: {reference_sdf_filepath}")
     
     ref_pdbqt_mol = next(pybel.readfile('pdbqt', reference_pdbqt_filepath))
     ref_pdbqt_mol.removeh()
     ref_pdbqt_mol = Chem.MolFromMol2Block(ref_pdbqt_mol.write('mol2'), sanitize=False, removeHs=True)
     if ref_pdbqt_mol is None:
-        log_error(logger, f"Failed to load reference PDBQT file: {reference_pdbqt_filepath}")
+        log_warning(logger, f"Failed to load reference PDBQT file: {reference_pdbqt_filepath}")
         raise ValueError(f"Failed to load reference PDBQT file: {reference_pdbqt_filepath}")
     
     # Load Docked Molecule
@@ -123,7 +123,7 @@ def fix_autodock_output_ligand(reference_sdf_filepath: str, reference_pdbqt_file
     docked_sdf_mol.removeh()
     docked_sdf_mol = Chem.MolFromMol2Block(docked_sdf_mol.write('mol2'), sanitize=False, removeHs=True)
     if docked_sdf_mol is None:
-        log_error(logger, f"Failed to load docked SDF file: {docked_sdf_filepath}")
+        log_warning(logger, f"Failed to load docked SDF file: {docked_sdf_filepath}")
         raise ValueError(f"Failed to load docked SDF file: {docked_sdf_filepath}")
     
     # Read Molecule and Conformation
@@ -233,7 +233,7 @@ def make_unbound(
         try:
             AllChem.EmbedMolecule(mol_with_hs, useRandomCoords=True)
         except Exception:
-            log_error(logger, "Failed to generate 3D conformer for the ligand.")
+            log_warning(logger, "Failed to generate 3D conformer for the ligand.")
             return None
     AllChem.MMFFOptimizeMolecule(mol_with_hs)
     
@@ -270,7 +270,7 @@ def make_unbound(
             log_info(logger, f"Placed ligand at {placement_dist:.2f} Å from protein center (attempt {attempt + 1}).")
             return mol_with_hs
 
-    log_error(logger, f"Failed to find a clash-free position after {max_retries} attempts.")
+    log_warning(logger, f"Failed to find a clash-free position after {max_retries} attempts.")
     return None
 
 def create_unbound_ligand_files(ligand_filepaths: List[str],
@@ -310,7 +310,7 @@ def create_unbound_ligand_files(ligand_filepaths: List[str],
             ligand_supplier = Chem.SDMolSupplier(ligand_path)
             ligand_mol = ligand_supplier[0]
             if ligand_mol is None:
-                log_error(logger, f"Failed to load ligand from {ligand_path}")
+                log_warning(logger, f"Failed to load ligand from {ligand_path}")
                 continue
                             
             # Try to generate unbound conformation up to 10 times
@@ -353,10 +353,10 @@ def create_unbound_ligand_files(ligand_filepaths: List[str],
                     break
             
             if not placed_successfully:
-                log_error(logger, f"Failed to place {ligand_path} after {max_placement_attempts} attempts")
+                log_warning(logger, f"Failed to place {ligand_path} after {max_placement_attempts} attempts")
                 
         except Exception as e:
-            log_error(logger, f"Error processing {ligand_path}: {str(e)}")
+            log_warning(logger, f"Error processing {ligand_path}: {str(e)}")
             continue
     
     return saved_conformations

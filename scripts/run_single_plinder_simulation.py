@@ -44,49 +44,82 @@ def check_if_simulation_exists(plinder_id, output_dir, config_template):
         return False
 
 
-def run_simulation(config):
+def run_simulation(config, sim_logger):
     # Initialize and run simulation
     sim = MDSimulation(config)
     
     # Preprocessing Step
+    log_info(sim_logger, f"Starting system setup for {config['info']['simulation_id']}")
     sim.set_system()
     
     # Heat up
     if sim.config['info']['simulation_status']['warmup'] == 'Not Done':
+        log_info(sim_logger, "Starting warmup phase")
         sim.warmup()
         sim.update_simulation_status('warmup', 'Done')
+        log_info(sim_logger, "Completed warmup phase")
         
     # Removal of Backbone Constraints
     if sim.config['info']['simulation_status']['backbone_removal'] == 'Not Done':
+        log_info(sim_logger, "Starting backbone constraints removal")
         sim.remove_backbone_constraints()
         sim.update_simulation_status('backbone_removal', 'Done')
+        log_info(sim_logger, "Completed backbone constraints removal")
 
     # NVT
     if sim.config['info']['simulation_status']['nvt'] == 'Not Done':
+        log_info(sim_logger, "Starting NVT equilibration")
         sim.nvt()
         sim.update_simulation_status('nvt', 'Done')
+        log_info(sim_logger, "Completed NVT equilibration")
 
     # NPT
     if sim.config['info']['simulation_status']['npt'] == 'Not Done':
+        log_info(sim_logger, "Starting NPT equilibration")
         sim.npt()
         sim.update_simulation_status('npt', 'Done')
+        log_info(sim_logger, "Completed NPT equilibration")
 
     # Production
     if sim.config['info']['simulation_status']['production'] == 'Not Done':
+        log_info(sim_logger, "Starting production run")
         sim.production()
         sim.update_simulation_status('production', 'Done')
+        log_info(sim_logger, "Completed production run")
 
 
 def process_single_system(plinder_id, config_template, output_dir):
-    # if check_if_simulation_exists(plinder_id, output_dir, config_template):
-    #     return
     try:
+        # Create system-specific config
         system_config_filepath = create_system_config(template_config=config_template, system_id=plinder_id, output_dir=output_dir)
         with open(system_config_filepath, 'r') as f:
             config = yaml.safe_load(f)
-        run_simulation(config)
+            
+        # Create system-specific output directory
+        system_output_dir = os.path.join(output_dir, config['info']['simulation_id'])
+        os.makedirs(system_output_dir, exist_ok=True)
+        
+        # Setup system-specific logger
+        log_dir = os.path.join(system_output_dir, 'logs')
+        sim_logger = setup_logger(
+            name=f"plinder_dynamics_{plinder_id}",
+            log_level=logging.INFO,
+            log_dir=log_dir,
+            console_output=True
+        )
+        
+        log_info(sim_logger, f"Starting simulation for system {plinder_id}")
+        log_info(sim_logger, f"Configuration loaded from {system_config_filepath}")
+        
+        run_simulation(config, sim_logger)
+        
+        log_info(sim_logger, f"Completed all simulation stages for system {plinder_id}")
+        
     except Exception as e:
-        log_error(logger, f"Error: {e}")
+        if 'sim_logger' in locals():
+            log_error(sim_logger, f"Error in simulation {plinder_id}: {str(e)}")
+        else:
+            log_error(logger, f"Error setting up simulation {plinder_id}: {str(e)}")
         return
 
     
@@ -108,22 +141,22 @@ def main():
 
     # Run Simulations
     if args.parallel > 1:
-        # Create a partial function with fixed arguments
         process_func = partial(process_single_system, 
-                             config_template=args.config_template,
-                             output_dir=args.output_dir)
-        
-        # Create a pool of workers
+                               config_template=args.config_template,
+                               output_dir=args.output_dir)
         with mp.Pool(processes=args.parallel) as pool:
-            # Map the function to all plinder_ids
             pool.map(process_func, plinder_ids)
     else:
+        log_info(logger, f"Running {len(plinder_ids)} simulations sequentially")
         # Sequential processing
-        for plinder_id in plinder_ids:                
+        for plinder_id in plinder_ids: 
             process_single_system(plinder_id, args.config_template, args.output_dir)
+
+    log_info(logger, "All simulations completed")
 
 
 if __name__ == "__main__":
+    mp.set_start_method("spawn", force=True)
     main() 
 
 

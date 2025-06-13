@@ -59,7 +59,7 @@ class MDSimulation:
         # Validate input files
         if not any([os.path.exists(protein_file) for protein_file in self.config['paths']['raw_protein_files']]):
             error_msg = f"One or more of the Protein files: {self.config['paths']['raw_protein_files']} dont exist!"
-            log_error(logger, error_msg)
+            log_warning(logger, error_msg)
             raise FileNotFoundError(error_msg)
 
         if len(self.config['paths']['raw_ligand_files']) > 0:
@@ -230,8 +230,8 @@ class MDSimulation:
     def process_protein(self, input_filepath: str, ph: float = 7.4):
         output_filepath = os.path.join(self.config['paths']['output_dir'], os.path.basename(input_filepath).replace('.pdb', '_fixed.pdb'))
         if not os.path.exists(output_filepath):
-            fixer, fixer_filepath = self.process_protein_with_pdbfixer(input_filepath, ph)
-            output_filepath = self.process_protein_with_pdb2pqr(input_filepath=fixer_filepath, output_pdb_filepath=output_filepath, ph=ph)
+            fixer_filepath = self.process_protein_with_pdb2pqr(input_filepath=input_filepath, output_pdb_filepath=output_filepath, ph=ph)
+            fixer, output_filepath = self.process_protein_with_pdbfixer(fixer_filepath, ph)
         fixer = pdbfixer.PDBFixer(output_filepath)
         return fixer
 
