@@ -80,10 +80,14 @@ def run_simulation(config):
 def process_single_system(plinder_id, config_template, output_dir):
     # if check_if_simulation_exists(plinder_id, output_dir, config_template):
     #     return
-    system_config_filepath = create_system_config(template_config=config_template, system_id=plinder_id, output_dir=output_dir)
-    with open(system_config_filepath, 'r') as f:
-        config = yaml.safe_load(f)
-    run_simulation(config)
+    try:
+        system_config_filepath = create_system_config(template_config=config_template, system_id=plinder_id, output_dir=output_dir)
+        with open(system_config_filepath, 'r') as f:
+            config = yaml.safe_load(f)
+        run_simulation(config)
+    except Exception as e:
+        log_error(logger, f"Error: {e}")
+        return
 
     
 def main():
