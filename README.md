@@ -14,7 +14,7 @@ A comprehensive molecular dynamics simulation pipeline built with OpenMM, suppor
 
 ## Prerequisites
 
-- Python 3.7+
+- Python 3.11
 - OpenMM
 - OpenFF Toolkit
 - RDKit
@@ -166,6 +166,175 @@ output_dir/
 └── {system_id}_init_system_with_posres.xml
 ```
 
+## Directory Structure
+
+```
+plinder_dynamics/
+├── config/
+│   ├── plinder_parameters_bound.yaml     # Configuration for bound state simulations
+│   ├── plinder_parameters_unbound.yaml   # Configuration for unbound state simulations
+│   ├── misato_parameters.yaml            # Configuration for MISATO simulations
+│   └── simulation_parameters.yaml        # Base simulation parameters
+├── scripts/
+│   ├── filters/
+│   │   ├── train_plinder.yaml           # Filter for training set
+│   │   └── test_plinder.yaml            # Filter for test set
+│   ├── run_single_plinder_simulation.py  # Run single system simulation
+│   ├── run_single_misato_simulation.py   # Run single MISATO simulation
+│   ├── run_simulation.py                 # Generic simulation runner
+│   └── fix_autodock_molecules.py         # Utility for fixing AutoDock output
+└── src/
+    └── dynamics_pipeline/
+        ├── simulation/
+        ├── data/
+        └── utils/
+```
+
+## Scripts Usage
+
+### Running Simulations
+
+1. **Single System Simulation**:
+   ```bash
+   python scripts/run_simulation.py \
+     --config path/to/config.yaml \
+   ```
+
+   Arguments:
+   - `--config_template`: Path to configuration file
+
+2. **Plinder System Simulation**:
+   ```bash
+   python scripts/run_single_plinder_simulation.py \
+     --config_template config/plinder_parameters_bound.yaml \
+     --filters scripts/filters/train_plinder.yaml \
+     --output_dir /path/to/output \
+     --parallel 4
+   ```
+
+   Arguments:
+   - `--config_template`: Path to configuration template
+   - `--filters`: Path to system filters file
+   - `--output_dir`: Output directory for simulations
+   - `--parallel`: Number of parallel processes (default: 1)
+   - `--overwrite`: Overwrite existing simulations (default: False)
+
+3. **MISATO Simulation**:
+   ```bash
+   python scripts/run_single_misato_simulation.py \
+     --config config/misato_parameters.yaml \
+     --output_dir /path/to/output
+   ```
+
+### Environment Setup
+
+Required environment variables:
+```bash
+export PLINDER_MOUNT='/path/to/data'
+export PLINDER_RELEASE='2024-06'
+export PLINDER_ITERATION='v2'
+export PLINDER_OFFLINE='true'
+```
+
+## Configuration System
+
+### Bound vs Unbound States
+
+The pipeline supports both bound and unbound state simulations:
+
+1. **Bound State**:
+   - The name can be misleading but by dyfeault `bound_state:` in config file is set `True`
+   - It's classical MD Simualtion
+
+2. **Unbound State**:
+   - Simulates protein and ligand separately
+   - When `bound_states` is set `False`, ligands are moved by random vector on sphere to simulate unbound state of protein - ligand complex 
+
+## Preprocessing Mechanisms
+
+### Protein Preprocessing
+
+1. **PDBFixer Processing**:
+   - Finds and adds missing residues
+   - Replaces non-standard residues
+   - Adds missing heavy atoms
+   - Adds missing hydrogens at specified pH
+   - Outputs standardized PDB file
+
+2. **PDB2PQR Processing**:
+   - Assigns protonation states
+   - Optimizes hydrogen bonding network
+   - Assigns atomic charges and radii
+   - Repairs broken side chains
+
+### Ligand Preprocessing
+
+1. **Structure Preparation**:
+   - Converts input format to OpenFF molecule
+   - Assigns atom types and parameters
+   - Generates 3D conformers if needed
+   - Validates molecular structure
+
+2. **Charge Assignment**:
+   - Uses Gasteiger charge method by default
+   - Stores charges in configuration
+   - Supports custom charge assignments
+   - Validates total molecular charge
+
+3. **Force Field Assignment**:
+   - Uses OpenFF force field
+   - Generates parameters for all atom types
+   - Validates parameter coverage
+   - Handles special atom types
+
+### System Setup
+
+1. **Complex Building**:
+   - Combines processed protein and ligand
+   - Assigns chain IDs and residue names
+   - Validates structure integrity
+   - Creates initial topology
+
+2. **Solvation**:
+   - Adds water box with specified padding
+   - Adds ions to neutralize system
+   - Sets ionic strength
+   - Validates system composition
+
+3. **Force Field Setup**:
+   - Combines protein and ligand parameters
+   - Adds solvent parameters
+   - Sets up periodic boundary conditions
+   - Validates parameter completeness
+
+## Troubleshooting
+
+Common issues and solutions:
+
+1. **CUDA Errors**:
+   - Ensure CUDA drivers are installed
+   - Check GPU visibility with `nvidia-smi`
+   - Verify OpenMM CUDA support
+   - Try running with `--force_cpu`
+
+2. **Memory Issues**:
+   - Reduce system size or padding
+   - Decrease parallel processes
+   - Monitor GPU memory usage
+   - Use smaller trajectory save intervals
+
+3. **Simulation Instability**:
+   - Check input structure quality
+   - Validate force field parameters
+   - Adjust time step and constraints
+   - Monitor energy conservation
+
+4. **Checkpoint Recovery**:
+   - Verify checkpoint file integrity
+   - Check file permissions
+   - Ensure consistent configuration
+   - Monitor disk space
+
 ## Usage
 
 1. **Create Configuration File**:
@@ -251,13 +420,59 @@ Each simulation stage produces:
 
 The pipeline supports automatic recovery from checkpoints if a simulation is interrupted. Each stage checks for existing checkpoints and resumes from the last saved state if available.
 
-## Logging
+## Logging System
 
-The pipeline uses a comprehensive logging system that records:
-- Simulation progress
-- Parameter changes
-- Error messages
-- Warning messages
-- Debug information
+The pipeline implements a comprehensive logging system with the following features:
 
-Logs are available at different verbosity levels (INFO, DEBUG, WARNING, ERROR).
+1. **Global Logger**:
+   - Tracks overall simulation progress
+   - Located in the main output directory under `logs/`
+   - Named `plinder_dynamics_TIMESTAMP.log`
+
+2. **System-Specific Loggers**:
+   - Each simulation gets its own logger
+   - Located in `output_dir/SYSTEM_ID/logs/`
+   - Named `plinder_dynamics_SYSTEM_ID_TIMESTAMP.log`
+   - Tracks detailed progress of individual simulation stages
+
+3. **Log Structure**:
+   ```
+   output_dir/
+   ├── logs/
+   │   └── plinder_dynamics_20240315_123456.log  # Global logger
+   ├── system1_simulation/
+   │   ├── logs/
+   │   │   └── plinder_dynamics_system1_20240315_123456.log
+   │   └── ...
+   ├── system2_simulation/
+   │   ├── logs/
+   │   │   └── plinder_dynamics_system2_20240315_123457.log
+   │   └── ...
+   └── ...
+   ```
+
+4. **Log Levels**:
+   - ERROR: Critical issues that prevent simulation completion
+   - WARNING: Non-critical issues that might affect results
+   - INFO: Progress updates and stage completion
+   - DEBUG: Detailed technical information
+
+5. **Log Format**:
+   ```
+   2024-03-15 12:34:56 - plinder_dynamics_system1 - INFO - Starting warmup phase
+   ```
+   Each log entry includes:
+   - Timestamp
+   - Logger name
+   - Log level
+   - Message
+
+6. **Parallel Processing**:
+   - In parallel mode, each process maintains its own system-specific logger
+   - Prevents log file conflicts between parallel simulations
+   - Global logger tracks overall progress
+
+7. **Error Handling**:
+   - Failed simulations are logged with full stack traces
+   - Errors are captured in both global and system-specific logs
+   - System-specific logs provide detailed context for debugging

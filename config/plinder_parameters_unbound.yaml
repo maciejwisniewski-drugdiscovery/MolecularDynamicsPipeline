@@ -22,7 +22,7 @@ forcefield:
   forcefield_kwargs:
     rigidWater: True
     removeCMMotion: False
-    hydrogenMass: 4               # amu
+    hydrogenMass: 1.5              # amu
 
 # Simulation parameters
 simulation_params:

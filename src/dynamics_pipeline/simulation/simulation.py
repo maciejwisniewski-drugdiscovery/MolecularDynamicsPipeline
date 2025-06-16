@@ -284,14 +284,13 @@ class MDSimulation:
                                                                   self.config['ligand_info']['ligand_names'], 
                                                                   self.config['ligand_info']['ligand_ccd_codes']):
                 openmm_molecule, openff_molecule = self.process_ligand(ligand_filepath, ligand_format, ligand_name)
-                openmm_molecule.name = ligand_ccd
-                openff_molecule.name = ligand_ccd
+                openmm_molecule.name = ligand_name
                 openff_molecules.append(openff_molecule)
-                openmm_molecule.topology.id = ligand_ccd
+                openmm_molecule.topology.id = ligand_name
                 complex.add(openmm_molecule.topology, openmm_molecule.positions)
-                complex.topology._chains[chain_idx].id = ligand_ccd
+                complex.topology._chains[chain_idx].id = ligand_name
                 for res_idx in range(len(complex.topology._chains[chain_idx]._residues)):
-                    complex.topology._chains[chain_idx]._residues[res_idx].name = ligand_ccd
+                    complex.topology._chains[chain_idx]._residues[res_idx].name = ligand_name
                     
                     new_atom_values = defaultdict(int)
                     for atom_idx, atom in enumerate(complex.topology._chains[chain_idx]._residues[res_idx]._atoms):
@@ -302,7 +301,6 @@ class MDSimulation:
                                 new_atom_values[atom.element.symbol] += 1
                             
                             complex.topology._chains[chain_idx]._residues[res_idx]._atoms[atom_idx].name = atom.element.symbol + str(new_atom_values[atom.element.symbol])
-                            a=1
                 chain_idx += 1
 
         return complex, openff_molecules
