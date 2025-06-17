@@ -29,11 +29,12 @@ def main():
     parser.add_argument('--max_trials', type=int, required=False, help='Maximum trials', default=10000000)
 
     args = parser.parse_args()
-    
+    print(f"Loading misato ids from {args.misato_ids_filepath}")
     misato_ids = load_misato_ids(args.misato_ids_filepath)
-    
+    print(f"Found {len(misato_ids)} misato ids")
     for misato_id in misato_ids:
-        generate_misato_unbound_data(misato_id,
+        try:
+            generate_misato_unbound_data(misato_id,
                                 ccd_pkl_filepath = args.ccd_pkl,
                                 misato_dir = args.misato_dir,
                                 output_dir = args.output_dir,
@@ -47,6 +48,10 @@ def main():
                                 z_samples = args.z_samples,
                                 max_trials = args.max_trials,
                                 logger=logger)
-        a=1
+        except Exception as e:
+            print(f"Error generating misato unbound data for {misato_id}: {e}")
+
 if __name__ == "__main__":
     main()
+
+

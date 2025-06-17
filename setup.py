@@ -11,6 +11,9 @@ setup(
         'numpy>=1.21.0',
         'openmm>=7.7.0',
         'openmmforcefields @git+https://github.com/openmm/openmmforcefields.git',
+        'pint>=0.20.1',
+        'openff-units @git+https://github.com/openforcefield/openff-units.git',
+        'openff-utilities @git+https://github.com/openforcefield/openff-utilities.git',
         'openff-toolkit @git+https://github.com/openforcefield/openff-toolkit.git@0.16.9',
         'pdbfixer @git+https://github.com/openmm/pdbfixer.git',
         'pdb2pqr>=3.0.0',
@@ -19,7 +22,9 @@ setup(
         'pandas>=1.5.0',
         'tqdm>=4.65.0',
         'pathlib>=1.0.1',
-        'openbabel-wheel'
+        'openbabel-wheel',
+        'scipy>=1.10.0',
+        'biotite==1.3.0'
     ],
     package_dir={'': 'src'},
     python_requires='>=3.7, <3.12',

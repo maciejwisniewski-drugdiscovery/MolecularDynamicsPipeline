@@ -522,6 +522,8 @@ def generate_misato_unbound_data(misato_id,
     os.makedirs(misato_complex_output_dir, exist_ok=True)
 
     protein_structures = [get_misato_protein_structure(misato_complex_filepath) for misato_complex_filepath in misato_complex_filepaths]
+    if len(misato_complex_filepaths) == 0:
+        raise ValueError(f"No misato complex filepaths found for {misato_id}")
     ligand_structure = get_misato_ligand_structure(misato_complex_filepaths[0])
 
     # Load CCD pkl and get ligand mol
