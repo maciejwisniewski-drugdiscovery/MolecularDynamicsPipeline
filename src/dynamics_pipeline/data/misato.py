@@ -326,6 +326,8 @@ def mcmc_ligand_sampling(
 ) -> list[tuple[Chem.Mol, struc.AtomArray]]:
     """
     Generate diverse ligand conformations around a protein using MCMC sampling.
+    In each step, both protein and ligand conformers are randomly selected.
+    This version is optimized for speed and includes internal coordinate moves.
     """
     if logger is None:
         logger = logging.getLogger(__name__)
@@ -334,18 +336,20 @@ def mcmc_ligand_sampling(
     if not protein_structures:
         raise ValueError("The protein_structures list cannot be empty.")
 
-    # Pre-compute protein properties and build KD-Trees for faster access
+    # --- Pre-computation Step ---
+    logger.info("Pre-computing protein and ligand data...")
+    
+    # Pre-compute protein properties and build KD-Trees
     precomputed_protein_data = []
-    logger.info("Pre-computing protein properties and KD-Trees...")
     for protein_structure in tqdm(protein_structures, desc="Preprocessing Proteins"):
         precomputed_protein_data.append({
+            'structure': protein_structure,
             'com': struc.mass_center(protein_structure),
             'rgyr': struc.gyration_radius(protein_structure),
-            'kdtree': cKDTree(protein_structure.coord),
-            'structure': protein_structure
+            'kdtree': cKDTree(protein_structure.coord)
         })
 
-    # Generate ligand conformers
+    # Generate and pre-compute ligand conformers
     ligand_template = Chem.Mol(ligand_mol)
     ligand_template.RemoveAllConformers()
     num_rotatable_bonds = Chem.rdMolDescriptors.CalcNumRotatableBonds(ligand_template)
@@ -356,26 +360,22 @@ def mcmc_ligand_sampling(
         AllChem.EmbedMolecule(ligand_template, AllChem.ETKDG())
     if ligand_template.GetNumConformers() == 0:
         raise ValueError("Could not generate any conformers for the ligand.")
-    ligand_conformers = ligand_template.GetConformers()
-
+    
     # --- MCMC Initialization: Find a starting position ---
     logger.info("Finding a valid starting position for the MCMC chain...")
     initial_conf = None
     trials = 0
-    all_protein_coords = np.vstack([p.coord for p in protein_structures])
+    all_protein_coords = np.vstack([p['kdtree'].data for p in precomputed_protein_data])
     box_min = all_protein_coords.min(axis=0) - distance_a
     box_max = all_protein_coords.max(axis=0) + distance_a
     box_size = box_max - box_min
 
     while trials < max_trials:
         trials += 1
-        selected_protein_data = random.choice(precomputed_protein_data)
-        protein_com = selected_protein_data['com']
-        protein_rgyr = selected_protein_data['rgyr']
-        protein_kdtree = selected_protein_data['kdtree']
-
-        selected_conformer = random.choice(ligand_conformers)
-        initial_ligand_coords = selected_conformer.GetPositions()
+        current_protein_info = random.choice(precomputed_protein_data)
+        
+        initial_ligand_conformer = random.choice(ligand_template.GetConformers())
+        initial_ligand_coords = initial_ligand_conformer.GetPositions()
         initial_ligand_com = initial_ligand_coords.mean(axis=0)
         
         rotation = R.random().as_matrix()
@@ -384,14 +384,12 @@ def mcmc_ligand_sampling(
         coords += translation
 
         ligand_com = coords.mean(axis=0)
-        dist_to_prot_com = np.linalg.norm(ligand_com - protein_com)
-        min_dist_to_protein, _ = protein_kdtree.query(coords, k=1)
-
-        # Apply all checks for a valid starting position
-        ligand_subset_coords = coords[ligand_subset_indices]
-        min_dist_subset, _ = protein_kdtree.query(ligand_subset_coords, k=1)
+        dist_to_prot_com = np.linalg.norm(ligand_com - current_protein_info['com'])
         
-        if (dist_to_prot_com > protein_rgyr + offset_a and 
+        min_dist_to_protein, _ = current_protein_info['kdtree'].query(coords, k=1)
+        min_dist_subset, _ = current_protein_info['kdtree'].query(coords[ligand_subset_indices], k=1)
+        
+        if (dist_to_prot_com > current_protein_info['rgyr'] + offset_a and 
             min_dist_to_protein.min() < distance_a and
             min_dist_subset.min() >= distance_c):
             new_mol = Chem.Mol(ligand_template)
@@ -401,7 +399,7 @@ def mcmc_ligand_sampling(
                 x, y, z = coords[i]
                 conformer.SetAtomPosition(i, (x, y, z))
             new_mol.AddConformer(conformer, assignId=True)
-            initial_conf = (new_mol, selected_protein_data['structure'])
+            initial_conf = (new_mol, current_protein_info)
             logger.info(f"Found initial position after {trials} trials.")
             break
     
@@ -410,45 +408,48 @@ def mcmc_ligand_sampling(
 
     # --- MCMC Sampling Loop ---
     collected_confs = [initial_conf]
-    current_mol, _ = initial_conf
+    current_mol, current_protein_info = initial_conf
     
     total_steps = n_samples * thinning
     with tqdm(total=total_steps, desc="Running MCMC Sampling") as pbar:
         for step in range(total_steps):
             pbar.update(1)
             
-            # Propose a move from the current state
-            current_coords = current_mol.GetConformer().GetPositions()
-            
-            # Small random translation
-            translation = (np.random.rand(3) - 0.5) * 2 * step_size_translation
-            
-            # Small random rotation
-            rotation_angle = np.deg2rad(step_size_rotation)
-            random_axis = np.random.rand(3)
-            random_axis /= np.linalg.norm(random_axis)
-            rotation = R.from_rotvec(rotation_angle * (np.random.rand() * 2 - 1) * random_axis)
-            
-            # Apply transformation
-            current_com = current_coords.mean(axis=0)
-            proposed_coords = rotation.apply(current_coords - current_com) + current_com + translation
+            move_type = random.choice(['rigid_body', 'internal_geom', 'protein_swap'])
 
-            # Check validity of the proposed move
-            selected_protein_data = random.choice(precomputed_protein_data)
+            proposed_coords = current_mol.GetConformer().GetPositions()
+            proposed_protein_info = current_protein_info
+
+            if move_type == 'rigid_body':
+                current_com = proposed_coords.mean(axis=0)
+                translation = (np.random.rand(3) - 0.5) * 2 * step_size_translation
+                rotation_angle = np.deg2rad(step_size_rotation)
+                random_axis = np.random.rand(3)
+                random_axis /= np.linalg.norm(random_axis)
+                rotation = R.from_rotvec(rotation_angle * (np.random.rand() * 2 - 1) * random_axis)
+                proposed_coords = rotation.apply(proposed_coords - current_com) + current_com + translation
+
+            elif move_type == 'internal_geom':
+                temp_mol = Chem.Mol(ligand_template)
+                temp_mol.RemoveAllConformers()
+                conf = random.choice(ligand_template.GetConformers())
+                temp_mol.AddConformer(conf, assignId=True)
+                AllChem.AlignMol(temp_mol, current_mol)
+                proposed_coords = temp_mol.GetConformer().GetPositions()
+
+            elif move_type == 'protein_swap':
+                proposed_protein_info = random.choice(precomputed_protein_data)
+
             proposed_ligand_com = proposed_coords.mean(axis=0)
+            dist_to_prot_com = np.linalg.norm(proposed_ligand_com - proposed_protein_info['com'])
             
-            dist_to_prot_com = np.linalg.norm(proposed_ligand_com - selected_protein_data['com'])
-            min_dist_to_protein, _ = selected_protein_data['kdtree'].query(proposed_coords, k=1)
+            min_dist_to_protein, _ = proposed_protein_info['kdtree'].query(proposed_coords, k=1)
+            min_dist_subset, _ = proposed_protein_info['kdtree'].query(proposed_coords[ligand_subset_indices], k=1)
 
-            # Apply all checks for a valid proposed move
-            ligand_subset_coords = proposed_coords[ligand_subset_indices]
-            min_dist_subset, _ = selected_protein_data['kdtree'].query(ligand_subset_coords, k=1)
-
-            # Acceptance criterion
-            if (dist_to_prot_com > selected_protein_data['rgyr'] + offset_a and 
+            if (dist_to_prot_com > proposed_protein_info['rgyr'] + offset_a and 
                 min_dist_to_protein.min() < distance_a and
                 min_dist_subset.min() >= distance_c):
-                # Accept the move
+                
                 new_mol = Chem.Mol(ligand_template)
                 new_mol.RemoveAllConformers()
                 conformer = Chem.Conformer(new_mol.GetNumAtoms())
@@ -457,38 +458,43 @@ def mcmc_ligand_sampling(
                     conformer.SetAtomPosition(i, (x, y, z))
                 new_mol.AddConformer(conformer, assignId=True)
                 current_mol = new_mol
+                current_protein_info = proposed_protein_info
                 
-                # Store sample if thinning interval is met
                 if step % thinning == 0:
-                    collected_confs.append((current_mol, selected_protein_data['structure']))
-            # If rejected, do nothing; the chain stays at the current state.
+                    collected_confs.append((current_mol, current_protein_info))
 
     logger.info(f"MCMC finished. Collected {len(collected_confs)} samples.")
     if not collected_confs:
         return []
 
-    # --- Diversification Step ---
+    # --- Diversification Step (Optimized) ---
+    logger.info("Selecting diverse conformations...")
     diverse_confs = []
     random.shuffle(collected_confs)
-    first_entry = collected_confs.pop(0)
-    diverse_confs.append(first_entry)
-    diverse_coords_list = [first_entry[0].GetConformer().GetPositions()]
+    
+    if not collected_confs:
+        return []
+        
+    first_mol, first_protein_info = collected_confs.pop(0)
+    diverse_confs.append((first_mol, first_protein_info['structure']))
+    
+    diverse_coords_stack = first_mol.GetConformer().GetPositions()
 
-    for candidate_entry in collected_confs:
-        if len(diverse_confs) >= z_samples:
-            break
-        candidate_mol, _ = candidate_entry
-        candidate_coords = candidate_mol.GetConformer().GetPositions()
-        is_diverse = True
-        for existing_coords in diverse_coords_list:
-            min_inter_dist = cdist(candidate_coords, existing_coords).min()
-            if min_inter_dist < distance_b:
-                is_diverse = False
+    with tqdm(total=min(z_samples, len(collected_confs)), desc="Diversifying Conformations") as pbar:
+        pbar.update(1)
+        for candidate_mol, candidate_protein_info in collected_confs:
+            if len(diverse_confs) >= z_samples:
                 break
-        if is_diverse:
-            diverse_confs.append(candidate_entry)
-            diverse_coords_list.append(candidate_coords)
+
+            candidate_coords = candidate_mol.GetConformer().GetPositions()
             
+            min_inter_dist = cdist(candidate_coords, diverse_coords_stack).min()
+            
+            if min_inter_dist >= distance_b:
+                diverse_confs.append((candidate_mol, candidate_protein_info['structure']))
+                diverse_coords_stack = np.vstack([diverse_coords_stack, candidate_coords])
+                pbar.update(1)
+
     return diverse_confs[:z_samples]
 
 def generate_misato_unbound_data(misato_id, 
