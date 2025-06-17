@@ -136,6 +136,8 @@ def monte_carlo_ligand_sampling(
     offset_a: float,
     distance_a: float,
     distance_b: float,
+    distance_c: float,
+    ligand_subset_indices: list[int],
     num_conformers_to_generate: int = 50,
     n_samples: int = 500,
     z_samples: int = 100,
@@ -151,6 +153,9 @@ def monte_carlo_ligand_sampling(
         offset_a: Minimum distance from the protein's center of gravity, added to the radius of gyration.
         distance_a: Maximum distance from the nearest protein atom.
         distance_b: Minimum distance between two different generated ligand conformations.
+        distance_c: Minimum distance for specific ligand atoms.
+        ligand_subset_indices: List of indices of ligand atoms to check for distance_c.
+        num_conformers_to_generate: The number of conformers to generate for the ligand.
         n_samples: The number of valid conformations to generate before diversity selection.
         z_samples: The final number of diverse conformations to return.
         logger: A logger object for progress updates.
@@ -242,6 +247,13 @@ def monte_carlo_ligand_sampling(
                 logger.debug(f"Trial {trials}: Rejected. Min distance to protein ({min_dist_to_protein.min():.2f}) is greater than threshold.")
                 continue
             
+            # Constraint 3: Min distance for specific ligand atoms
+            ligand_subset_coords = coords[ligand_subset_indices]
+            min_dist_subset, _ = protein_kdtree.query(ligand_subset_coords, k=1)
+            if min_dist_subset.min() < distance_c:
+                logger.debug(f"Trial {trials}: Rejected. Min distance for ligand subset ({min_dist_subset.min():.2f}) is less than threshold {distance_c}.")
+                continue
+            
             # Conformation accepted
             new_mol = Chem.Mol(ligand_template)
             new_mol.RemoveAllConformers()
@@ -295,13 +307,199 @@ def monte_carlo_ligand_sampling(
 
     return diverse_confs[:z_samples]
 
+def mcmc_ligand_sampling(
+    ligand_mol: Chem.Mol,
+    protein_structures: list[struc.AtomArray],
+    offset_a: float,
+    distance_a: float,
+    distance_b: float,
+    distance_c: float,
+    ligand_subset_indices: list[int],
+    step_size_translation: float = 0.5, # Angstrom
+    step_size_rotation: float = 5.0, # Degrees
+    num_conformers_to_generate: int = 50,
+    n_samples: int = 500,
+    z_samples: int = 100,
+    max_trials: int = 100000,
+    thinning: int = 20,
+    logger: logging.Logger = None
+) -> list[tuple[Chem.Mol, struc.AtomArray]]:
+    """
+    Generate diverse ligand conformations around a protein using MCMC sampling.
+    """
+    if logger is None:
+        logger = logging.getLogger(__name__)
+        logger.addHandler(logging.NullHandler())
+
+    if not protein_structures:
+        raise ValueError("The protein_structures list cannot be empty.")
+
+    # Pre-compute protein properties and build KD-Trees for faster access
+    precomputed_protein_data = []
+    logger.info("Pre-computing protein properties and KD-Trees...")
+    for protein_structure in tqdm(protein_structures, desc="Preprocessing Proteins"):
+        precomputed_protein_data.append({
+            'com': struc.mass_center(protein_structure),
+            'rgyr': struc.gyration_radius(protein_structure),
+            'kdtree': cKDTree(protein_structure.coord),
+            'structure': protein_structure
+        })
+
+    # Generate ligand conformers
+    ligand_template = Chem.Mol(ligand_mol)
+    ligand_template.RemoveAllConformers()
+    num_rotatable_bonds = Chem.rdMolDescriptors.CalcNumRotatableBonds(ligand_template)
+    num_conformers_to_generate = num_conformers_to_generate if num_rotatable_bonds > 0 else 1
+    if num_rotatable_bonds > 0:
+        AllChem.EmbedMultipleConfs(ligand_template, numConfs=num_conformers_to_generate, params=AllChem.ETKDG())
+    else:
+        AllChem.EmbedMolecule(ligand_template, AllChem.ETKDG())
+    if ligand_template.GetNumConformers() == 0:
+        raise ValueError("Could not generate any conformers for the ligand.")
+    ligand_conformers = ligand_template.GetConformers()
+
+    # --- MCMC Initialization: Find a starting position ---
+    logger.info("Finding a valid starting position for the MCMC chain...")
+    initial_conf = None
+    trials = 0
+    all_protein_coords = np.vstack([p.coord for p in protein_structures])
+    box_min = all_protein_coords.min(axis=0) - distance_a
+    box_max = all_protein_coords.max(axis=0) + distance_a
+    box_size = box_max - box_min
+
+    while trials < max_trials:
+        trials += 1
+        selected_protein_data = random.choice(precomputed_protein_data)
+        protein_com = selected_protein_data['com']
+        protein_rgyr = selected_protein_data['rgyr']
+        protein_kdtree = selected_protein_data['kdtree']
+
+        selected_conformer = random.choice(ligand_conformers)
+        initial_ligand_coords = selected_conformer.GetPositions()
+        initial_ligand_com = initial_ligand_coords.mean(axis=0)
+        
+        rotation = R.random().as_matrix()
+        coords = np.dot(initial_ligand_coords - initial_ligand_com, rotation)
+        translation = box_min + np.random.rand(3) * box_size
+        coords += translation
+
+        ligand_com = coords.mean(axis=0)
+        dist_to_prot_com = np.linalg.norm(ligand_com - protein_com)
+        min_dist_to_protein, _ = protein_kdtree.query(coords, k=1)
+
+        # Apply all checks for a valid starting position
+        ligand_subset_coords = coords[ligand_subset_indices]
+        min_dist_subset, _ = protein_kdtree.query(ligand_subset_coords, k=1)
+        
+        if (dist_to_prot_com > protein_rgyr + offset_a and 
+            min_dist_to_protein.min() < distance_a and
+            min_dist_subset.min() >= distance_c):
+            new_mol = Chem.Mol(ligand_template)
+            new_mol.RemoveAllConformers()
+            conformer = Chem.Conformer(new_mol.GetNumAtoms())
+            for i in range(new_mol.GetNumAtoms()):
+                x, y, z = coords[i]
+                conformer.SetAtomPosition(i, (x, y, z))
+            new_mol.AddConformer(conformer, assignId=True)
+            initial_conf = (new_mol, selected_protein_data['structure'])
+            logger.info(f"Found initial position after {trials} trials.")
+            break
+    
+    if initial_conf is None:
+        raise RuntimeError(f"Could not find a valid starting position after {max_trials} trials.")
+
+    # --- MCMC Sampling Loop ---
+    collected_confs = [initial_conf]
+    current_mol, _ = initial_conf
+    
+    total_steps = n_samples * thinning
+    with tqdm(total=total_steps, desc="Running MCMC Sampling") as pbar:
+        for step in range(total_steps):
+            pbar.update(1)
+            
+            # Propose a move from the current state
+            current_coords = current_mol.GetConformer().GetPositions()
+            
+            # Small random translation
+            translation = (np.random.rand(3) - 0.5) * 2 * step_size_translation
+            
+            # Small random rotation
+            rotation_angle = np.deg2rad(step_size_rotation)
+            random_axis = np.random.rand(3)
+            random_axis /= np.linalg.norm(random_axis)
+            rotation = R.from_rotvec(rotation_angle * (np.random.rand() * 2 - 1) * random_axis)
+            
+            # Apply transformation
+            current_com = current_coords.mean(axis=0)
+            proposed_coords = rotation.apply(current_coords - current_com) + current_com + translation
+
+            # Check validity of the proposed move
+            selected_protein_data = random.choice(precomputed_protein_data)
+            proposed_ligand_com = proposed_coords.mean(axis=0)
+            
+            dist_to_prot_com = np.linalg.norm(proposed_ligand_com - selected_protein_data['com'])
+            min_dist_to_protein, _ = selected_protein_data['kdtree'].query(proposed_coords, k=1)
+
+            # Apply all checks for a valid proposed move
+            ligand_subset_coords = proposed_coords[ligand_subset_indices]
+            min_dist_subset, _ = selected_protein_data['kdtree'].query(ligand_subset_coords, k=1)
+
+            # Acceptance criterion
+            if (dist_to_prot_com > selected_protein_data['rgyr'] + offset_a and 
+                min_dist_to_protein.min() < distance_a and
+                min_dist_subset.min() >= distance_c):
+                # Accept the move
+                new_mol = Chem.Mol(ligand_template)
+                new_mol.RemoveAllConformers()
+                conformer = Chem.Conformer(new_mol.GetNumAtoms())
+                for i in range(new_mol.GetNumAtoms()):
+                    x, y, z = proposed_coords[i]
+                    conformer.SetAtomPosition(i, (x, y, z))
+                new_mol.AddConformer(conformer, assignId=True)
+                current_mol = new_mol
+                
+                # Store sample if thinning interval is met
+                if step % thinning == 0:
+                    collected_confs.append((current_mol, selected_protein_data['structure']))
+            # If rejected, do nothing; the chain stays at the current state.
+
+    logger.info(f"MCMC finished. Collected {len(collected_confs)} samples.")
+    if not collected_confs:
+        return []
+
+    # --- Diversification Step ---
+    diverse_confs = []
+    random.shuffle(collected_confs)
+    first_entry = collected_confs.pop(0)
+    diverse_confs.append(first_entry)
+    diverse_coords_list = [first_entry[0].GetConformer().GetPositions()]
+
+    for candidate_entry in collected_confs:
+        if len(diverse_confs) >= z_samples:
+            break
+        candidate_mol, _ = candidate_entry
+        candidate_coords = candidate_mol.GetConformer().GetPositions()
+        is_diverse = True
+        for existing_coords in diverse_coords_list:
+            min_inter_dist = cdist(candidate_coords, existing_coords).min()
+            if min_inter_dist < distance_b:
+                is_diverse = False
+                break
+        if is_diverse:
+            diverse_confs.append(candidate_entry)
+            diverse_coords_list.append(candidate_coords)
+            
+    return diverse_confs[:z_samples]
+
 def generate_misato_unbound_data(misato_id, 
                                 ccd_pkl_filepath, 
                                 misato_dir, 
                                 output_dir, 
+                                method: str = 'mcmc',
                                 offset_a = 8,
-                                distance_a = 24,
+                                distance_a = 30,
                                 distance_b = 5,
+                                distance_c = 6,
                                 num_conformers_to_generate = 50,
                                 n_samples = 500,
                                 z_samples = 100,
@@ -326,17 +524,44 @@ def generate_misato_unbound_data(misato_id,
     ligand_resname = ligand_structure.res_name[0]+'_misato'
     ligand_mol = ccd_pkl[ligand_resname]
     
-    results = monte_carlo_ligand_sampling(
-        ligand_mol = ligand_mol,
-        protein_structures = protein_structures,
-        offset_a = 8,
-        distance_a = 24,
-        distance_b = 5,
-        num_conformers_to_generate = 50,
-        n_samples = 500,
-        z_samples = 100,
-        max_trials = 100000,
-        logger = logger)
+    # Define the subset of ligand atoms to check for distance_c (e.g., heavy atoms)
+    ligand_heavy_atom_indices = [atom.GetIdx() for atom in ligand_mol.GetAtoms() if atom.GetAtomicNum() > 1]
+    if not ligand_heavy_atom_indices:
+        logger.warning("Could not find any heavy atoms in the ligand. distance_c constraint will be ignored.")
+        ligand_heavy_atom_indices = list(range(ligand_mol.GetNumAtoms()))
+    
+    if method == 'mc':
+        logger.info("Using Monte Carlo (MC) sampling method.")
+        results = monte_carlo_ligand_sampling(
+            ligand_mol=ligand_mol,
+            protein_structures=protein_structures,
+            offset_a=offset_a,
+            distance_a=distance_a,
+            distance_b=distance_b,
+            distance_c=distance_c,
+            ligand_subset_indices=ligand_heavy_atom_indices,
+            num_conformers_to_generate=num_conformers_to_generate,
+            n_samples=n_samples,
+            z_samples=z_samples,
+            max_trials=max_trials,
+            logger=logger)
+    elif method == 'mcmc':
+        logger.info("Using Markov Chain Monte Carlo (MCMC) sampling method.")
+        results = mcmc_ligand_sampling(
+            ligand_mol=ligand_mol,
+            protein_structures=protein_structures,
+            offset_a=offset_a,
+            distance_a=distance_a,
+            distance_b=distance_b,
+            distance_c=distance_c,
+            ligand_subset_indices=ligand_heavy_atom_indices,
+            num_conformers_to_generate=num_conformers_to_generate,
+            n_samples=n_samples,
+            z_samples=z_samples,
+            max_trials=max_trials,
+            logger=logger)
+    else:
+        raise ValueError(f"Unknown sampling method: {method}. Choose 'mc' or 'mcmc'.")
     
     ligand_chain = ligand_structure.chain_id[0]
     ligand_resid = ligand_structure.res_id[0]
