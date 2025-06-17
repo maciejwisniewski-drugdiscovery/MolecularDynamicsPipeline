@@ -415,30 +415,30 @@ def mcmc_ligand_sampling(
         for step in range(total_steps):
             pbar.update(1)
             
-            move_type = random.choice(['rigid_body', 'internal_geom', 'protein_swap'])
+            # Combined MCMC move: protein swap, internal geometry change, and rigid body transformation
+            
+            # 1. Swap protein
+            proposed_protein_info = random.choice(precomputed_protein_data)
 
-            proposed_coords = current_mol.GetConformer().GetPositions()
-            proposed_protein_info = current_protein_info
+            # 2. Internal geometry change (new conformer) aligned to previous state
+            temp_mol = Chem.Mol(ligand_template)
+            temp_mol.RemoveAllConformers()
+            conf = random.choice(ligand_template.GetConformers())
+            temp_mol.AddConformer(conf, assignId=True)
+            AllChem.AlignMol(temp_mol, current_mol)
+            proposed_coords = temp_mol.GetConformer().GetPositions()
 
-            if move_type == 'rigid_body':
-                current_com = proposed_coords.mean(axis=0)
-                translation = (np.random.rand(3) - 0.5) * 2 * step_size_translation
-                rotation_angle = np.deg2rad(step_size_rotation)
-                random_axis = np.random.rand(3)
-                random_axis /= np.linalg.norm(random_axis)
-                rotation = R.from_rotvec(rotation_angle * (np.random.rand() * 2 - 1) * random_axis)
-                proposed_coords = rotation.apply(proposed_coords - current_com) + current_com + translation
-
-            elif move_type == 'internal_geom':
-                temp_mol = Chem.Mol(ligand_template)
-                temp_mol.RemoveAllConformers()
-                conf = random.choice(ligand_template.GetConformers())
-                temp_mol.AddConformer(conf, assignId=True)
-                AllChem.AlignMol(temp_mol, current_mol)
-                proposed_coords = temp_mol.GetConformer().GetPositions()
-
-            elif move_type == 'protein_swap':
-                proposed_protein_info = random.choice(precomputed_protein_data)
+            # 3. Rigid body transformation
+            current_com = proposed_coords.mean(axis=0)
+            translation = (np.random.rand(3) - 0.5) * 2 * step_size_translation
+            rotation_angle = np.deg2rad(step_size_rotation)
+            random_axis = np.random.rand(3)
+            norm = np.linalg.norm(random_axis)
+            if norm > 1e-6: # Avoid division by zero
+                random_axis /= norm
+            
+            rotation = R.from_rotvec(rotation_angle * (np.random.rand() * 2 - 1) * random_axis)
+            proposed_coords = rotation.apply(proposed_coords - current_com) + current_com + translation
 
             proposed_ligand_com = proposed_coords.mean(axis=0)
             dist_to_prot_com = np.linalg.norm(proposed_ligand_com - proposed_protein_info['com'])
@@ -517,7 +517,10 @@ def generate_misato_unbound_data(misato_id,
         logger.addHandler(logging.NullHandler())
 
     misato_complex_filepaths = [os.path.join(misato_dir, x) for x in os.listdir(misato_dir) if misato_id in x]
-
+    if len(misato_complex_filepaths) == 0:
+        logger.warning(f"No misato complex filepaths found for {misato_id} in {misato_dir}.")
+        return []
+    
     misato_complex_output_dir = os.path.join(output_dir, misato_id)
     os.makedirs(misato_complex_output_dir, exist_ok=True)
 
