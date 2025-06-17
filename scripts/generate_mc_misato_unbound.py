@@ -32,9 +32,9 @@ def main():
     
     for misato_id in misato_ids:
         generate_misato_unbound_data(misato_id,
-                                args.ccd_pkl,
-                                args.misato_dir,
-                                args.output_dir,
+                                ccd_pkl = args.ccd_pkl,
+                                misato_dir = args.misato_dir,
+                                output_dir = args.output_dir,
                                 offset_a = args.offset_a,
                                 distance_a = args.distance_a,
                                 distance_b = args.distance_b,

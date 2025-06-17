@@ -273,6 +273,7 @@ def monte_carlo_ligand_sampling(
     diverse_confs.append(first_entry)
     
     # Keep track of coordinates of diverse ligands
+    # TODO: maybe clustering the diverse ligands would be better?
     diverse_coords_list = [first_entry[0].GetConformer().GetPositions()]
 
     for candidate_entry in accepted_confs:
@@ -294,7 +295,18 @@ def monte_carlo_ligand_sampling(
 
     return diverse_confs[:z_samples]
 
-def generate_misato_unbound_data(misato_id, ccd_pkl_filepath, misato_dir, output_dir, logger=None):
+def generate_misato_unbound_data(misato_id, 
+                                ccd_pkl_filepath, 
+                                misato_dir, 
+                                output_dir, 
+                                offset_a = 8,
+                                distance_a = 24,
+                                distance_b = 5,
+                                num_conformers_to_generate = 50,
+                                n_samples = 500,
+                                z_samples = 100,
+                                max_trials = 100000,
+                                logger=None):
 
     if logger is None:
         logger = logging.getLogger(__name__)
