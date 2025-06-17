@@ -226,6 +226,24 @@ plinder_dynamics/
      --output_dir /path/to/output
    ```
 
+3. **MISATO Unbound Generator - Fast **:
+   ```bash
+   python scripts/generate_mc_misato_unbound.py \
+     --output_dir             path to output dir \
+     --misato_ids_filepath    path to misato txt filepath with misato ids to calculate \
+     --misato_dir             path to misato simulation cif.gz complexes dir \
+     --ccd_pkl                path to CCD.pkl file with parsed rdkit.Chem.Mo ligands \
+     --method                 mc or mcmc \
+     --offset_a               offset \
+     --distance_a             maximum distance between ligand and protein atoms
+     --distance_b             minimum distance between two conformers
+     --distance_c             minimum distance between ligand and protein atoms
+     --num_conformers_to_generate      number of unique ligand conformers from rdkit
+     --n_samples              number of structures before clustering
+     --z_samples              number of final structures
+     --max_trials             number of monte carlo attempts
+   ```
+
 ### Environment Setup
 
 Required environment variables:
