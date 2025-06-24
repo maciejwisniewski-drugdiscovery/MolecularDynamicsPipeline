@@ -510,6 +510,7 @@ def generate_misato_unbound_data(misato_id,
                                 n_samples = 500,
                                 z_samples = 100,
                                 max_trials = 100000,
+                                overwrite = False,
                                 logger=None):
 
     if logger is None:
@@ -522,6 +523,12 @@ def generate_misato_unbound_data(misato_id,
         return []
     
     misato_complex_output_dir = os.path.join(output_dir, misato_id)
+    if os.path.exists(misato_complex_output_dir):
+        if len(os.listdir(misato_complex_output_dir)) == z_samples:
+            logger.info(f"Found {z_samples} conformations for {misato_id} in {misato_complex_output_dir}. Skipping generation.")
+            return []
+        else:
+            logger.info(f"Found {len(os.listdir(misato_complex_output_dir))} conformations for {misato_id} in {misato_complex_output_dir}. Continuing generation.")
     os.makedirs(misato_complex_output_dir, exist_ok=True)
 
     protein_structures = [get_misato_protein_structure(misato_complex_filepath) for misato_complex_filepath in misato_complex_filepaths]
