@@ -16,11 +16,12 @@ from openmm import app, unit
 from openmm import Platform, XmlSerializer, LangevinIntegrator, CustomExternalForce, MonteCarloBarostat
 from openmm.app.modeller import Modeller
 from openmm.app import ForceField
-from openmmforcefields.generators import SystemGenerator
+from openmmforcefields.generators import SystemGenerator, GAFFTemplateGenerator
 
 from plinder.core.scores import query_index
 from dynamics_pipeline.utils.errors import NoneLigandError, NoneConformerError
 from dynamics_pipeline.utils.logger import setup_logger, log_info, log_error, log_warning, log_debug
+from dynamics_pipeline.utils.preprocessing import download_nonstandard_residue
 from dynamics_pipeline.data.small_molecule import load_molecule_to_openmm
 from dynamics_pipeline.data.biomolecules import fix_biomolecule_with_pdb2pqr
 
@@ -207,20 +208,34 @@ class MDSimulation:
 
     def process_protein_with_pdbfixer(self, input_filepath: str, ph: float = 7.4):
         """Process the protein with PDBFixer"""
+
         fixer = pdbfixer.PDBFixer(input_filepath)
+
+        nonstandard_residues = []
+        fixer.findNonstandardResidues()
+        for nonstd_res in fixer.nonstandardResidues:
+            nonstandard_residue_name = nonstd_res[0].name
+            nonstandard_residues.append(nonstandard_residue_name)
+
+        nonstandard_residues = list(set(nonstandard_residues))
+        for nonstd_res in nonstandard_residues:
+            fixer.downloadTemplate(nonstd_res)
+
+        for sequence in fixer.sequences:
+            for u_res in list(set(sequence.residues)):
+                fixer.downloadTemplate(u_res)
+
         fixer.findMissingResidues()
-        fixer.findNonstandardResidues()  # find non-standard residue
-        fixer.replaceNonstandardResidues()  # replace non-standard residues with standard one
         fixer.findMissingAtoms()  # find missing heavy atoms
-        fixer.addMissingHydrogens(ph)
         fixer.addMissingAtoms()  # add missing atoms and residues
+        fixer.addMissingHydrogens(ph)
         
         output_filepath = os.path.join(self.config['paths']['output_dir'], os.path.basename(input_filepath).replace('.pdb', '_pdbfixer.pdb'))
-        app.PDBFile.writeFile(fixer.topology, fixer.positions, open(output_filepath, 'w'))
-        return fixer, output_filepath
+        app.pdbxfile.PDBxFile.writeFile(fixer.topology, fixer.positions, open(output_filepath, 'w'))
+        return fixer, output_filepath, nonstandard_residues
         
 
-    def process_protein_with_pdb2pqr(self, input_filepath: str, output_pdb_filepath: str, ph: float = 7.4):
+    def d(self, input_filepath: str, output_pdb_filepath: str, ph: float = 7.4):
         fix_biomolecule_with_pdb2pqr(receptor_pdb_filepath = input_filepath,
                                      output_pdb_filepath = output_pdb_filepath,
                                      ph = ph)
@@ -228,12 +243,10 @@ class MDSimulation:
 
 
     def process_protein(self, input_filepath: str, ph: float = 7.4):
-        output_filepath = os.path.join(self.config['paths']['output_dir'], os.path.basename(input_filepath).replace('.pdb', '_fixed.pdb'))
-        if not os.path.exists(output_filepath):
-            fixer_filepath = self.process_protein_with_pdb2pqr(input_filepath=input_filepath, output_pdb_filepath=output_filepath, ph=ph)
-            fixer, output_filepath = self.process_protein_with_pdbfixer(fixer_filepath, ph)
-        fixer = pdbfixer.PDBFixer(output_filepath)
-        return fixer
+        output_filepath = os.path.join(self.config['paths']['output_dir'], os.path.basename(input_filepath).replace('.pdb', '_fixed.pdb'))    
+        #fixer_filepath = self.process_protein_with_pdb2pqr(input_filepath=input_filepath, output_pdb_filepath=output_filepath, ph=ph)
+        fixer, output_filepath, nonstandard_residues = self.process_protein_with_pdbfixer(input_filepath, ph)
+        return fixer, nonstandard_residues
 
 
     def process_ligand(self, input_filepath: str, input_format: str, input_name: str):
@@ -267,12 +280,18 @@ class MDSimulation:
     def process_complex(self):
         # Load the complex structure        
         if self.config['preprocessing']['process_protein'] == True:
+
+            protein_nonstandard_residues = []
+            
             for idx, protein_filepath in enumerate(self.config['paths']['raw_protein_files']):
-                protein_pdbfixer = self.process_protein(protein_filepath)
+                protein_pdbfixer, nonstandard_residues = self.process_protein(protein_filepath)
+                protein_nonstandard_residues.extend(nonstandard_residues)
                 if idx == 0:
                     complex = Modeller(protein_pdbfixer.topology, protein_pdbfixer.positions)
                 else:
-                    complex.add(protein_pdbfixer.topology, protein_pdbfixer.positions) 
+                    complex.add(protein_pdbfixer.topology, protein_pdbfixer.positions)
+                if len(protein_nonstandard_residues) > 0:
+                    self.config['protein_info']['nonstandard_residues'] = protein_nonstandard_residues
         else:
             complex = app.pdbxfile.PDBxFile(self.config['paths']['init_topology_filepath'])
         
@@ -305,6 +324,15 @@ class MDSimulation:
 
         return complex, openff_molecules
 
+    def get_nonstandard_residues_template(self, nonstandard_residue: str):
+        nonstandard_residue_file = nonstandard_residue+'.sdf'
+        nonstandard_residue_filepath = Path(os.getenv('CCD_SDF_DIR')) / nonstandard_residue_file
+        if not nonstandard_residue_filepath.exists():
+            check = download_nonstandard_residue(nonstandard_residue, nonstandard_residue_filepath)
+            if check == False:
+                raise FileNotFoundError(f"Nonstandard residue template {nonstandard_residue_file} not found in {os.getenv('CCD_SDF_DIR')}")
+        nonstandard_residues_template = Molecule.from_file(nonstandard_residue_filepath)
+        return nonstandard_residues_template
 
     def set_system(self):
         if all([os.path.exists(self.config['paths']['init_system_filepath']),
@@ -319,12 +347,21 @@ class MDSimulation:
             system_with_posres = XmlSerializer.deserialize(open(self.config['paths']['init_system_with_posres_filepath']).read())
         else:
             complex, openff_molecules = self.process_complex()
+            nonstandard_residues_templates = []
+            if self.config['protein_info'].get('nonstandard_residues', None) is not None:
+                for nonstandard_residue in self.config['protein_info']['nonstandard_residues']:
+                    nonstandard_residues_template = self.get_nonstandard_residues_template(nonstandard_residue)
+                    nonstandard_residues_templates.append(nonstandard_residues_template)
+
+            generator_molecules = openff_molecules + nonstandard_residues_templates
+            
+            #print(generator_molecules)
             system_generator = SystemGenerator(
                 forcefields = [self.config['forcefield']['proteinFF'], 
                                self.config['forcefield']['nucleicFF'], 
                                self.config['forcefield']['waterFF']],
                 small_molecule_forcefield = self.config['forcefield']['ligandFF'],
-                molecules = openff_molecules,
+                molecules = generator_molecules,
                 forcefield_kwargs = {
                     'constraints': self.config['forcefield']['forcefield_kwargs'].get('constraints', None),
                     'rigidWater': self.config['forcefield']['forcefield_kwargs'].get('rigidWater', True),
@@ -332,6 +369,12 @@ class MDSimulation:
                     'hydrogenMass': self.config['forcefield']['forcefield_kwargs'].get('hydrogenMass') * unit.amu
                 }
                 )
+
+            gaff = GAFFTemplateGenerator(molecules=generator_molecules)
+            gaff.add_molecules(generator_molecules)
+            system_generator.forcefield.registerTemplateGenerator(gaff.generator)
+            system_generator.add_molecules(generator_molecules)
+
             if self.config['preprocessing'].get('add_solvate', True):
                 complex.addSolvent(
                     system_generator.forcefield,
@@ -339,13 +382,13 @@ class MDSimulation:
                     padding = self.config['preprocessing']['box_padding'] * unit.nanometers,
                     ionicStrength = self.config['preprocessing']['ionic_strength'] * unit.molar,
                 )
-                a=1
+                
                 with open(self.config['paths']['init_topology_filepath'], 'w') as outfile:
                     app.PDBxFile.writeFile(complex.topology, complex.positions, outfile)
                 with open(self.config['paths']['init_topology_filepath'].replace('.cif', '.pdb'), 'w') as outfile:
                     app.PDBFile.writeFile(complex.topology, complex.positions, outfile)
             
-                system = system_generator.create_system(complex.topology, molecules = openff_molecules)
+                system = system_generator.create_system(complex.topology, molecules = generator_molecules)
                 with open(self.config['paths']['init_system_filepath'], 'w') as outfile:
                     outfile.write(XmlSerializer.serialize(system))
 
@@ -356,7 +399,6 @@ class MDSimulation:
         self.model = complex
         self.system = system
         self.system_with_posres = system_with_posres
-
 
     def set_reporters(self, simulation, 
                       checkpoint_filepath: str,
@@ -404,7 +446,6 @@ class MDSimulation:
             )
         )
         return simulation
-
 
     def warmup(self):
         """Run warmup simulation with gradual temperature increase.

@@ -9,12 +9,17 @@ import logging
 from pathlib import Path
 from typing import Union, List
 import numpy as np
+
 import biotite
+import biotite.structure as struc
 import biotite.structure.io.pdbx as pdbx
 import biotite.structure.io.pdb as pdb
+import biotite.structure.io.mol as molio
+import biotite.interface.rdkit as biotite_rdkit
+
 from openbabel import pybel
+
 from dynamics_pipeline.utils.logger import setup_logger, log_info, log_error, log_warning, log_debug
-import biotite.structure as struc
 
 logger = setup_logger(name="plinder_dynamics", log_level=logging.INFO)
 
@@ -170,7 +175,9 @@ def fix_autodock_output_ligand(reference_sdf_filepath: str, reference_pdbqt_file
     return ref_sdf_mol
 
 
+# -- legacy function --
 def fix_molecule_with_pybel(input_filepath: str, output_dir: str, overwrite: bool = False):
+    ''' --- legacy function --- '''
     output_name = os.path.splitext(os.path.basename(input_filepath))[0]
     output_path = os.path.join(output_dir, f"{output_name}.sdf")
     if os.path.exists(output_path) and not overwrite:
@@ -181,6 +188,24 @@ def fix_molecule_with_pybel(input_filepath: str, output_dir: str, overwrite: boo
     pybel_molecule.removeh()
     pybel_molecule.write('sdf', output_path)
     return output_path
+
+
+def fix_molecule_with_biotite(input_filepath: str, output_dir: str, overwrite: bool = False):
+    output_name = os.path.splitext(os.path.basename(input_filepath))[0]
+    output_filepath = os.path.join(output_dir, f"{output_name}.sdf")
+    if os.path.exists(output_path) and not overwrite:
+        return output_path
+
+    input_file = molio.SDFile.read(input_filepath)
+    molecule = molio.get_structure(input_file)
+    rdkit_molecule = biotite_rdkit.to_mol(molecule)
+    molecule = biotite_rdkit.from_mol(rdkit_molecule, add_hydrogen=True)
+
+    output_file = molio.SDFile()
+    molio.set_structure(output_file, molecule)
+    output_file.write(output_filepath)
+    return output_filepath 
+
 
 def make_unbound(
     mol: Mol, 
@@ -272,6 +297,7 @@ def make_unbound(
 
     log_warning(logger, f"Failed to find a clash-free position after {max_retries} attempts.")
     return None
+
 
 def create_unbound_ligand_files(ligand_filepaths: List[str],
                                 ref_protein: Union[struc.AtomArray, struc.AtomArrayStack, Path],

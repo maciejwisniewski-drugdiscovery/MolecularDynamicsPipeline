@@ -7,6 +7,8 @@ This module provides functionality for:
 """
 
 import os
+import dotenv
+dotenv.load_dotenv('plinder.env')
 import random
 from typing import Optional
 from pathlib import Path
@@ -68,6 +70,7 @@ def load_plinder_ids(filters: Optional[str] = None):
         splits=plinder_filters.splits,
         filters=plinder_filters.filters
     )
+    PLINDEX = PLINDEX.iloc[10:11]
     plinder_ids = set(PLINDEX['system_id'].tolist())
     return plinder_ids
 
@@ -103,14 +106,13 @@ def create_system_config(template_config: Path, system_id: str, output_dir: Path
         config['paths']['output_dir'] = os.path.join(output_dir, config['info']['simulation_id'])
         os.makedirs(os.path.join(output_dir, config['info']['simulation_id']), exist_ok=True)
 
-        config['paths']['raw_protein_files'] = [os.path.join(os.getenv('PLINDER_MOUNT'), 'plinder', os.getenv('PLINDER_RELEASE'),os.getenv('PLINDER_ITERATION'), 'systems', system_id, 'receptor.pdb')]
+        config['paths']['raw_protein_files'] = [os.path.join(os.getenv('PLINDER_MOUNT'), 'plinder', os.getenv('PLINDER_RELEASE'),os.getenv('PLINDER_ITERATION'), 'systems', system_id, 'receptor.cif')]
 
         plinder_ligand_dir = os.path.join(os.getenv('PLINDER_MOUNT'), 'plinder',os.getenv('PLINDER_RELEASE'),
                                           os.getenv('PLINDER_ITERATION'), 'systems', system_id, 'ligand_files')
         
         plinder_ligand_filepaths = [os.path.join(plinder_ligand_dir, x) for x in os.listdir(plinder_ligand_dir)]
-        plinder_ligand_filepaths = [fix_molecule_with_pybel(input_filepath = ligand_filepath,
-                                                            output_dir = config['paths']['output_dir']) for ligand_filepath in plinder_ligand_filepaths]
+        plinder_ligand_filepaths = [fix_molecule_with_pybel(input_filepath = ligand_filepath, output_dir = config['paths']['output_dir']) for ligand_filepath in plinder_ligand_filepaths]
 
         if config['info']['bound_state'] == True:
             config['paths']['raw_ligand_files'] = plinder_ligand_filepaths

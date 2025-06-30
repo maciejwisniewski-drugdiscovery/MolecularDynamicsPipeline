@@ -3,6 +3,9 @@
 import os
 import yaml
 import argparse
+import dotenv
+dotenv.load_dotenv('plinder.env')
+
 from typing import Optional
 import random
 import multiprocessing as mp
@@ -87,6 +90,8 @@ def run_simulation(config, sim_logger):
         sim.update_simulation_status('production', 'Done')
         log_info(sim_logger, "Completed production run")
 
+    if sim.config['info'].get('calculate_energy', False) == True:
+        
 
 def process_single_system(plinder_id, config_template, output_dir):
     try:
@@ -125,9 +130,9 @@ def process_single_system(plinder_id, config_template, output_dir):
     
 def main():
     parser = argparse.ArgumentParser(description='Run Molecular Dynamics Simulation with OpenMM')
-    parser.add_argument('--config_template', type=str, required=False, help='Path to config template file', default='config/plinder_parameters.yaml')
+    parser.add_argument('--config_template', type=str, required=False, help='Path to config template file', default='config/plinder_parameters_bound.yaml')
     parser.add_argument('--filters', type=str, required=False, help='Filters to apply to the PLINDER systems', default='scripts/filters/train_plinder.yaml')
-    parser.add_argument('--output_dir', type=str, required=False, help='Output directory', default=None)
+    parser.add_argument('--output_dir', type=str, required=False, help='Output directory', default=os.getenv('OUTPUT_DIR'))
     parser.add_argument('--overwrite', type=bool, required=False, help='Overwrite existing simulation', default=False)
     parser.add_argument('--parallel', type=int, required=False, help='Number of parallel processes to use', default=1)
 
@@ -138,7 +143,7 @@ def main():
     assert os.path.exists(args.config_template), f"Config file {args.config} does not exist!"
 
     plinder_ids = load_plinder_ids(args.filters)
-
+    
     # Run Simulations
     if args.parallel > 1:
         process_func = partial(process_single_system, 
@@ -158,10 +163,3 @@ def main():
 if __name__ == "__main__":
     mp.set_start_method("spawn", force=True)
     main() 
-
-
-#export PLINDER_MOUNT='/mnt/evafs/groups/sfglab/mwisniewski/Data'
-#export PLINDER_RELEASE='2024-06'
-#export PLINDER_ITERATION='v2'
-#export PLINDER_OFFLINE='true'
-#export OPENMM_DEFAULT_PLATFORM='CUDA'
