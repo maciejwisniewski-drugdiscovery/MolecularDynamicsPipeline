@@ -24,7 +24,12 @@ setup(
         'pathlib>=1.0.1',
         'openbabel-wheel',
         'scipy>=1.10.0',
-        'biotite==1.3.0'
+        'biotite==1.2.0',
+        'cachetools',
+        'plinder',
+        'importlib-resources'
+        'python-dotenv',
+        'jinja2'
     ],
     package_dir={'': 'src'},
     python_requires='>=3.7, <3.12',
