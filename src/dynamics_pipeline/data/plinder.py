@@ -70,8 +70,8 @@ def load_plinder_ids(filters: Optional[str] = None):
         splits=plinder_filters.splits,
         filters=plinder_filters.filters
     )
-    PLINDEX = PLINDEX.iloc[10:11]
     plinder_ids = set(PLINDEX['system_id'].tolist())
+    plinder_ids = set(['2c27__1__1.A__1.C'])
     return plinder_ids
 
 
