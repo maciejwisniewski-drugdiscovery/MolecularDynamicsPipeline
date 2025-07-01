@@ -10,10 +10,11 @@ class ForceReporter(object):
     """
     A custom OpenMM reporter that saves atomic forces incrementally
     to a memory-mapped NumPy file (.npy) for efficiency.
+    Supports resuming from checkpoints by loading existing force data.
     """
     def __init__(self, file, reportInterval, total_steps, atom_indices, dtype=np.float32):
         """
-        Initializes the ForceReporter and creates the memory-mapped file.
+        Initializes the ForceReporter and creates or loads the memory-mapped file.
 
         Parameters
         ----------
@@ -39,15 +40,40 @@ class ForceReporter(object):
         
         # Calculate the total number of frames that will be saved.
         self._total_frames = int(np.ceil(total_steps / self._reportInterval))
+        
         if self._total_frames == 0 or self._n_atoms == 0:
             log_warning(logger, "ForceReporter initialized with 0 total frames or 0 atoms. No forces will be saved.")
             self._memmap = None
-        else:
-            # Shape of the final data will be (frames, atoms, 3)
-            shape = (self._total_frames, self._n_atoms, 3)
-            # Create a memory-mapped array. This creates a file on disk of the final size.
-            self._memmap = np.lib.format.open_memmap(self._temp_outpath, dtype=self._dtype, mode='w+', shape=shape)
-        
+            self._report_counter = 0
+            return
+
+        # Shape of the final data will be (frames, atoms, 3)
+        shape = (self._total_frames, self._n_atoms, 3)
+
+        # Check if temporary file exists and try to load it
+        if os.path.exists(self._temp_outpath):
+            try:
+                existing_memmap = np.lib.format.open_memmap(self._temp_outpath, dtype=self._dtype, mode='r')
+                if existing_memmap.shape == shape:
+                    # Find the last non-zero frame
+                    non_zero_frames = np.any(existing_memmap != 0, axis=(1, 2))
+                    last_frame = np.max(np.where(non_zero_frames)[0]) + 1 if np.any(non_zero_frames) else 0
+                    
+                    # Create new memmap and copy existing data
+                    self._memmap = np.lib.format.open_memmap(self._temp_outpath, dtype=self._dtype, mode='r+', shape=shape)
+                    self._report_counter = last_frame
+                    log_info(logger, f"Resuming ForceReporter from frame {last_frame} of {self._total_frames}")
+                    return
+                else:
+                    log_warning(logger, f"Existing force data has wrong shape. Expected {shape}, found {existing_memmap.shape}. Starting fresh.")
+                    os.remove(self._temp_outpath)
+            except Exception as e:
+                log_warning(logger, f"Error loading existing force data: {str(e)}. Starting fresh.")
+                if os.path.exists(self._temp_outpath):
+                    os.remove(self._temp_outpath)
+
+        # If we get here, we need to create a new memmap file
+        self._memmap = np.lib.format.open_memmap(self._temp_outpath, dtype=self._dtype, mode='w+', shape=shape)
         self._report_counter = 0
         log_info(logger, f"ForceReporter initialized for {self._total_frames} frames on {self._n_atoms} atoms. Will save to {self._final_outpath}")
 
@@ -105,6 +131,28 @@ class ForceReporter(object):
 
 class HessianReporter(object):
     def __init__(self, file, reportInterval, total_steps, atom_indices, simulation, eps=1e-4, dtype=np.float32):
+        """
+        A custom OpenMM reporter that saves Hessian matrices incrementally
+        to a memory-mapped NumPy file (.npy) for efficiency.
+        Supports resuming from checkpoints by loading existing Hessian data.
+
+        Parameters
+        ----------
+        file : str
+            The path to the output .npz file.
+        reportInterval : int
+            The interval (in number of steps) at which to report Hessian.
+        total_steps : int
+            The total number of steps in the simulation stage.
+        atom_indices : list
+            List of atom indices to compute Hessian for.
+        simulation : openmm.app.Simulation
+            The OpenMM simulation object.
+        eps : float
+            The finite difference step size.
+        dtype : np.dtype
+            The data type to use for storing Hessian matrices.
+        """
         self._outpath = file.replace('.npz', '.npy')
         self._final_outpath = file
         self._reportInterval = reportInterval
@@ -122,10 +170,35 @@ class HessianReporter(object):
         if self._total_frames == 0 or self._n_atoms == 0:
             log_warning(logger, "HessianReporter initialized with 0 frames or 0 atoms. No hessian will be saved.")
             self._memmap = None
-        else:
-            shape = (self._total_frames, 3 * self._n_atoms, 3 * self._n_atoms)
-            self._memmap = np.lib.format.open_memmap(self._outpath, dtype=self._dtype, mode='w+', shape=shape)
-        
+            self._report_counter = 0
+            return
+
+        shape = (self._total_frames, 3 * self._n_atoms, 3 * self._n_atoms)
+
+        # Check if temporary file exists and try to load it
+        if os.path.exists(self._outpath):
+            try:
+                existing_memmap = np.lib.format.open_memmap(self._outpath, dtype=self._dtype, mode='r')
+                if existing_memmap.shape == shape:
+                    # Find the last non-zero frame
+                    non_zero_frames = np.any(existing_memmap != 0, axis=(1, 2))
+                    last_frame = np.max(np.where(non_zero_frames)[0]) + 1 if np.any(non_zero_frames) else 0
+                    
+                    # Create new memmap and copy existing data
+                    self._memmap = np.lib.format.open_memmap(self._outpath, dtype=self._dtype, mode='r+', shape=shape)
+                    self._report_counter = last_frame
+                    log_info(logger, f"Resuming HessianReporter from frame {last_frame} of {self._total_frames}")
+                    return
+                else:
+                    log_warning(logger, f"Existing Hessian data has wrong shape. Expected {shape}, found {existing_memmap.shape}. Starting fresh.")
+                    os.remove(self._outpath)
+            except Exception as e:
+                log_warning(logger, f"Error loading existing Hessian data: {str(e)}. Starting fresh.")
+                if os.path.exists(self._outpath):
+                    os.remove(self._outpath)
+
+        # If we get here, we need to create a new memmap file
+        self._memmap = np.lib.format.open_memmap(self._outpath, dtype=self._dtype, mode='w+', shape=shape)
         self._report_counter = 0
         log_info(logger, f"HessianReporter initialized for {self._total_frames} frames on {self._n_atoms} atoms. Will save to {self._final_outpath}")
 
@@ -191,3 +264,5 @@ class HessianReporter(object):
             log_info(logger, f"Successfully compressed Hessian data to {self._final_outpath}")
         except Exception as e:
             log_error(logger, f"[HessianReporter] Compression error: {e}")
+            if os.path.exists(self._outpath):
+                log_warning(logger, f"Keeping original uncompressed file at {self._outpath}")
