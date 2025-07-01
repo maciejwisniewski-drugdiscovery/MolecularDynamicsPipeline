@@ -13,7 +13,7 @@ from functools import partial
 
 import logging
 from dynamics_pipeline.utils.logger import setup_logger, log_info, log_error, log_warning, log_debug
-from dynamics_pipeline.simulation.simulation import MDSimulation
+from dynamics_pipeline.simulation.simulation_refactored import MDSimulation
 from dynamics_pipeline.data.plinder import load_plinder_ids, create_system_config
 
 random.seed(42)
@@ -90,7 +90,7 @@ def run_simulation(config, sim_logger):
         sim.update_simulation_status('production', 'Done')
         log_info(sim_logger, "Completed production run")
 
-    if sim.config['info'].get('calculate_energy', False) == True:
+    #if sim.config['info'].get('calculate_energy', False) == True:
         
 
 def process_single_system(plinder_id, config_template, output_dir):

@@ -23,72 +23,144 @@ from dynamics_pipeline.utils.logger import setup_logger, log_info, log_error, lo
 
 logger = setup_logger(name="plinder_dynamics", log_level=logging.INFO)
 
+def neutralizeRadicals(mol: Chem.Mol) -> Chem.Mol:
+    """
+    Neutralize radicals and charges in a molecule.
+    
+    Parameters:
+    -----------
+    mol : rdkit.Chem.Mol
+        The molecule to neutralize
+        
+    Returns:
+    --------
+    rdkit.Chem.Mol
+        The neutralized molecule
+    """
+    if mol is None:
+        return mol
+        
+    try:
+        # Create a copy to avoid modifying the original
+        mol_copy = Chem.Mol(mol)
+        
+        # Neutralize charges
+        for atom in mol_copy.GetAtoms():
+            if atom.GetFormalCharge() != 0:
+                atom.SetFormalCharge(0)
+            if atom.GetNumRadicalElectrons() != 0:
+                atom.SetNumRadicalElectrons(0)
+        
+        # Try to sanitize after neutralization
+        try:
+            Chem.SanitizeMol(mol_copy)
+        except:
+            # If sanitization fails, return the original molecule
+            return mol
+            
+        return mol_copy
+        
+    except Exception as e:
+        log_warning(logger, f"Failed to neutralize molecule: {str(e)}")
+        return mol
+
 def load_molecule_to_openmm(input_filepath: str, input_format: str):
     '''
     There are 6 methods to read Ligands. We will try all of them.
     List of methods:
-        * Mol2 File -> OpenBabel -> Mol2 Block -> RDKit Molecule -> OpenFF-Toolkit Molecule
-        * SDF File -> OpenBabel -> Mol2 Block -> RDKit Molecule -> OpenFF-Toolkit Molecule
-        * Mol2 File -> RDKit Molecule -> OpenFF-Toolkit Molecule
-        * SDF File -> RDKit Molecule -> OpenFF-Toolkit Molecule
-        * SDF File -> OpenFF-Toolkit Molecule
+        * SDF File -> OpenFF-Toolkit Molecule (preferred - preserves bonds)
+        * SDF File -> RDKit Molecule -> OpenFF-Toolkit Molecule (with proper sanitization)
+        * Mol2 File -> OpenFF-Toolkit Molecule (preferred - preserves bonds)  
+        * Mol2 File -> RDKit Molecule -> OpenFF-Toolkit Molecule (with proper sanitization)
+        * OpenBabel -> Mol2 Block -> RDKit Molecule -> OpenFF-Toolkit Molecule (fallback)
     :return: OpenFF-Toolkit Molecule
     '''
     assert os.path.exists(input_filepath), 'Ligand file doesn\'t exist.'
     if input_format == '.sdf':
+        # Method 1: Direct OpenFF loading (preferred - preserves all bond information)
         try:
             openff_molecule = Molecule.from_file(input_filepath)
+            log_info(logger, f"Successfully loaded SDF file using OpenFF direct method: {input_filepath}")
             return openff_molecule
         except Exception as e:
-            log_warning(logger, f"Failed to load SDF file: {input_filepath} with error: {e}")
+            log_warning(logger, f"Failed to load SDF file with OpenFF direct method: {input_filepath} with error: {e}")
+        
+        # Method 2: RDKit with proper sanitization (preserves bonds)
         try:
-            suppl = Chem.ForwardSDMolSupplier(input_filepath,sanitize=False,removeHs=True)
+            suppl = Chem.ForwardSDMolSupplier(input_filepath, sanitize=True, removeHs=False)
             rdkit_molecule = next(suppl)
+            if rdkit_molecule is None:
+                raise ValueError("Failed to read molecule from SDF")
+            
+            # Ensure proper atom mapping for tracking
             for atom in rdkit_molecule.GetAtoms():
                 atom.SetProp("molAtomMapNumber", str(atom.GetIdx()))
+            
+            # Sanitize to ensure proper bond orders and chemistry
+            Chem.SanitizeMol(rdkit_molecule)
             openff_molecule = Molecule.from_rdkit(rdkit_molecule, allow_undefined_stereo=True)
+            log_info(logger, f"Successfully loaded SDF file using RDKit method: {input_filepath}")
             return openff_molecule
         except Exception as e:
-            log_warning(logger, f"Failed to load SDF file: {input_filepath} with error: {e}")
+            log_warning(logger, f"Failed to load SDF file with RDKit method: {input_filepath} with error: {e}")
+        
+        # Method 3: OpenBabel fallback (as last resort)
         try:
             # Load SDF File to PyBel
             pybel_molecule = next(pybel.readfile('sdf', input_filepath))
-            pybel_molecule.removeh()
-            pybel_molecule.addh()
-            pybel_molecule.removeh()
-            # Convert to Mol2 Block
+            # Convert to Mol2 Block (preserves bonds better than removing/adding H)
             mol2_block = pybel_molecule.write('mol2')
-            # Convert to RDKit Molecule
-            rdkit_molecule = Chem.MolFromMol2Block(mol2_block,sanitize=False,removeHs=True)
+            # Convert to RDKit Molecule with proper settings
+            rdkit_molecule = Chem.MolFromMol2Block(mol2_block, sanitize=True, removeHs=False)
+            if rdkit_molecule is None:
+                raise ValueError("Failed to convert from Mol2 block")
+            
             # Convert to OpenFF-Toolkit Molecule
-            openff_molecule = Molecule.from_rdkit(rdkit_molecule,allow_undefined_stereo=True)
+            openff_molecule = Molecule.from_rdkit(rdkit_molecule, allow_undefined_stereo=True)
+            log_info(logger, f"Successfully loaded SDF file using OpenBabel fallback: {input_filepath}")
             return openff_molecule
         except Exception as e:
-            log_warning(logger, f"Failed to load SDF file: {input_filepath} with error: {e}")
-            raise ValueError(f"Failed to load SDF file: {input_filepath} with error: {e}")
+            log_warning(logger, f"Failed to load SDF file with OpenBabel fallback: {input_filepath} with error: {e}")
+            raise ValueError(f"Failed to load SDF file: {input_filepath}. All methods failed. Last error: {e}")
+            
     if input_format == '.mol2':
+        # Method 1: Direct OpenFF loading (preferred - preserves all bond information)
         try:
             openff_molecule = Molecule.from_file(input_filepath)
+            log_info(logger, f"Successfully loaded MOL2 file using OpenFF direct method: {input_filepath}")
             return openff_molecule
-        except:
-            log_warning(logger, f"Failed to load MOL2 file: {input_filepath}")
+        except Exception as e:
+            log_warning(logger, f"Failed to load MOL2 file with OpenFF direct method: {input_filepath} with error: {e}")
+        
+        # Method 2: RDKit with proper sanitization
         try:
-            rdkit_molecule = Chem.MolFromMol2File(input_filepath,sanitize=False,removeHs=True)
+            rdkit_molecule = Chem.MolFromMol2File(input_filepath, sanitize=True, removeHs=False)
+            if rdkit_molecule is None:
+                raise ValueError("Failed to read molecule from MOL2")
+            
+            Chem.SanitizeMol(rdkit_molecule)
             openff_molecule = Molecule.from_rdkit(rdkit_molecule, allow_undefined_stereo=True)
+            log_info(logger, f"Successfully loaded MOL2 file using RDKit method: {input_filepath}")
             return openff_molecule
-        except:
-            log_warning(logger, f"Failed to load MOL2 file: {input_filepath}")
+        except Exception as e:
+            log_warning(logger, f"Failed to load MOL2 file with RDKit method: {input_filepath} with error: {e}")
+        
+        # Method 3: OpenBabel fallback  
         try:
             pybel_molecule = next(pybel.readfile('mol2', input_filepath))
-            pybel_molecule.removeh()
             mol2_block = pybel_molecule.write('mol2')
-            rdkit_molecule = Chem.MolFromMol2Block(mol2_block,sanitize=False,removeHs=True)
+            rdkit_molecule = Chem.MolFromMol2Block(mol2_block, sanitize=True, removeHs=False)
+            if rdkit_molecule is None:
+                raise ValueError("Failed to convert from Mol2 block")
+            
             openff_molecule = Molecule.from_rdkit(rdkit_molecule, allow_undefined_stereo=True)
+            log_info(logger, f"Successfully loaded MOL2 file using OpenBabel fallback: {input_filepath}")
             return openff_molecule
-        except:
-            log_warning(logger, f"Failed to load MOL2 file: {input_filepath}")
-            raise ValueError(f"Failed to load MOL2 file: {input_filepath}")
-    return
+        except Exception as e:
+            log_warning(logger, f"Failed to load MOL2 file with OpenBabel fallback: {input_filepath} with error: {e}")
+            raise ValueError(f"Failed to load MOL2 file: {input_filepath}. All methods failed. Last error: {e}")
+    
+    raise ValueError(f"Unsupported file format: {input_format}. Supported formats: .sdf, .mol2")
 
 
 def match_atoms_based_on_coords(ref_coords: list, coords: list):
@@ -106,19 +178,19 @@ def match_atoms_based_on_coords(ref_coords: list, coords: list):
 
 def fix_autodock_output_ligand(reference_sdf_filepath: str, reference_pdbqt_filepath: str, docked_sdf_filepath: str, output_sdf_filepath: str, sanitize: bool = True):
     '''
-    This function is used to fix the autodock output ligand.
+    This function is used to fix the autodock output ligand while preserving bond information.
     '''
     # Load Reference Molecule
     ref_sdf_mol = next(pybel.readfile('sdf', reference_sdf_filepath))
     ref_sdf_mol.removeh()
-    ref_sdf_mol = Chem.MolFromMol2Block(ref_sdf_mol.write('mol2'), sanitize=False, removeHs=True)
+    ref_sdf_mol = Chem.MolFromMol2Block(ref_sdf_mol.write('mol2'), sanitize=True, removeHs=False)
     if ref_sdf_mol is None:
         log_warning(logger, f"Failed to load reference SDF file: {reference_sdf_filepath}")
         raise ValueError(f"Failed to load reference SDF file: {reference_sdf_filepath}")
     
     ref_pdbqt_mol = next(pybel.readfile('pdbqt', reference_pdbqt_filepath))
     ref_pdbqt_mol.removeh()
-    ref_pdbqt_mol = Chem.MolFromMol2Block(ref_pdbqt_mol.write('mol2'), sanitize=False, removeHs=True)
+    ref_pdbqt_mol = Chem.MolFromMol2Block(ref_pdbqt_mol.write('mol2'), sanitize=True, removeHs=False)
     if ref_pdbqt_mol is None:
         log_warning(logger, f"Failed to load reference PDBQT file: {reference_pdbqt_filepath}")
         raise ValueError(f"Failed to load reference PDBQT file: {reference_pdbqt_filepath}")
@@ -126,19 +198,39 @@ def fix_autodock_output_ligand(reference_sdf_filepath: str, reference_pdbqt_file
     # Load Docked Molecule
     docked_sdf_mol = next(pybel.readfile('sdf', docked_sdf_filepath))
     docked_sdf_mol.removeh()
-    docked_sdf_mol = Chem.MolFromMol2Block(docked_sdf_mol.write('mol2'), sanitize=False, removeHs=True)
+    docked_sdf_mol = Chem.MolFromMol2Block(docked_sdf_mol.write('mol2'), sanitize=True, removeHs=False)
     if docked_sdf_mol is None:
         log_warning(logger, f"Failed to load docked SDF file: {docked_sdf_filepath}")
         raise ValueError(f"Failed to load docked SDF file: {docked_sdf_filepath}")
     
-    # Read Molecule and Conformation
-    ref_sdf_mol = neutralizeRadicals(ref_sdf_mol)
+    # Read Molecule and Conformation - Apply proper sanitization if requested
+    if sanitize:
+        try:
+            sanitize_result = Chem.SanitizeMol(ref_sdf_mol, catchErrors=True)
+            if sanitize_result != Chem.SANITIZE_NONE:
+                log_warning(logger, f"Sanitization issues detected for reference SDF molecule: {sanitize_result}")
+            ref_sdf_mol = neutralizeRadicals(ref_sdf_mol)
+        except Exception as e:
+            log_warning(logger, f"Failed to sanitize reference SDF molecule: {str(e)}, using as-is")
+    else:
+        ref_sdf_mol = neutralizeRadicals(ref_sdf_mol)
+        
     ref_sdf_conf = ref_sdf_mol.GetConformer()
     ref_sdf_coords = [(round(ref_sdf_conf.GetAtomPosition(i).x,3),
                         round(ref_sdf_conf.GetAtomPosition(i).y,3),
                         round(ref_sdf_conf.GetAtomPosition(i).z,3)) for i in range(ref_sdf_conf.GetNumAtoms())]
     
-    ref_pdbqt_mol = neutralizeRadicals(ref_pdbqt_mol)
+    if sanitize:
+        try:
+            sanitize_result = Chem.SanitizeMol(ref_pdbqt_mol, catchErrors=True)
+            if sanitize_result != Chem.SANITIZE_NONE:
+                log_warning(logger, f"Sanitization issues detected for reference PDBQT molecule: {sanitize_result}")
+            ref_pdbqt_mol = neutralizeRadicals(ref_pdbqt_mol)
+        except Exception as e:
+            log_warning(logger, f"Failed to sanitize reference PDBQT molecule: {str(e)}, using as-is")
+    else:
+        ref_pdbqt_mol = neutralizeRadicals(ref_pdbqt_mol)
+        
     ref_pdbqt_conf = ref_pdbqt_mol.GetConformer()
     ref_pdbqt_coords = [(round(ref_pdbqt_conf.GetAtomPosition(i).x,3),
                         round(ref_pdbqt_conf.GetAtomPosition(i).y,3),
@@ -148,7 +240,17 @@ def fix_autodock_output_ligand(reference_sdf_filepath: str, reference_pdbqt_file
     # So to map SDF outputs i have to make this strange alignment.
     atom_map = match_atoms_based_on_coords(ref_sdf_coords, ref_pdbqt_coords)
 
-    docked_sdf_mol = neutralizeRadicals(docked_sdf_mol)
+    if sanitize:
+        try:
+            sanitize_result = Chem.SanitizeMol(docked_sdf_mol, catchErrors=True)
+            if sanitize_result != Chem.SANITIZE_NONE:
+                log_warning(logger, f"Sanitization issues detected for docked SDF molecule: {sanitize_result}")
+            docked_sdf_mol = neutralizeRadicals(docked_sdf_mol)
+        except Exception as e:
+            log_warning(logger, f"Failed to sanitize docked SDF molecule: {str(e)}, using as-is")
+    else:
+        docked_sdf_mol = neutralizeRadicals(docked_sdf_mol)
+        
     docked_sdf_conformer = next(docked_sdf_mol.GetConformers())
     docked_sdf_coords = [(round(docked_sdf_conformer.GetAtomPosition(i).x,3),
                       round(docked_sdf_conformer.GetAtomPosition(i).y,3),
@@ -172,6 +274,7 @@ def fix_autodock_output_ligand(reference_sdf_filepath: str, reference_pdbqt_file
     ref_sdf_mol.AddConformer(conf, assignId=True)
     # ADD CONFORMER AND SAVE
 
+    log_info(logger, f"Fixed autodock output ligand with preserved bond information: {output_sdf_filepath}")
     return ref_sdf_mol
 
 
