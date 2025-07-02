@@ -131,7 +131,8 @@ def process_single_system(plinder_id, config_template, output_dir):
 def main():
     parser = argparse.ArgumentParser(description='Run Molecular Dynamics Simulation with OpenMM')
     parser.add_argument('--config_template', type=str, required=False, help='Path to config template file', default='config/plinder_parameters_bound.yaml')
-    parser.add_argument('--filters', type=str, required=False, help='Filters to apply to the PLINDER systems', default='scripts/filters/train_plinder.yaml')
+    parser.add_argument('--filters', type=str, required=False, help='Filters to apply to the PLINDER systems', default='scripts/plinder_scripts/filters/train_plinder.yaml')
+    parser.add_argument('--plinder_id', type=str, required=False, help='Single PLINDER ID to run (overrides filters)')
     parser.add_argument('--output_dir', type=str, required=False, help='Output directory', default=os.getenv('OUTPUT_DIR'))
     parser.add_argument('--overwrite', type=bool, required=False, help='Overwrite existing simulation', default=False)
     parser.add_argument('--parallel', type=int, required=False, help='Number of parallel processes to use', default=1)
@@ -140,12 +141,20 @@ def main():
     
     os.makedirs(os.path.join(args.output_dir), exist_ok=True)
     # Load Config
-    assert os.path.exists(args.config_template), f"Config file {args.config} does not exist!"
+    assert os.path.exists(args.config_template), f"Config file {args.config_template} does not exist!"
 
-    plinder_ids = load_plinder_ids(args.filters)
+    # Determine which PLINDER IDs to process
+    if args.plinder_id:
+        # Single PLINDER ID provided
+        plinder_ids = [args.plinder_id]
+        log_info(logger, f"Running single simulation for PLINDER ID: {args.plinder_id}")
+    else:
+        # Load from filters
+        plinder_ids = load_plinder_ids(args.filters)
+        log_info(logger, f"Loaded {len(plinder_ids)} PLINDER IDs from filters")
     
     # Run Simulations
-    if args.parallel > 1:
+    if args.parallel > 1 and len(plinder_ids) > 1:
         process_func = partial(process_single_system, 
                                config_template=args.config_template,
                                output_dir=args.output_dir)

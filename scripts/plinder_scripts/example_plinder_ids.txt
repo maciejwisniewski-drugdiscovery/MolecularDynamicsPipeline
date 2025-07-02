@@ -1,0 +1,14 @@
+# Example PLINDER ID list file
+# Lines starting with # are comments and will be ignored
+# Empty lines are also ignored
+# One PLINDER ID per line
+
+1a0o__A_1_A.bfactor-90_01
+1a1e__A_1_A.bfactor-90_01
+1a28__A_1_A.bfactor-90_01
+1a30__A_1_A.bfactor-90_01
+1a42__A_1_A.bfactor-90_01
+
+# You can add more IDs here...
+# 1a4g__A_1_A.bfactor-90_01
+# 1a52__A_1_A.bfactor-90_01 
