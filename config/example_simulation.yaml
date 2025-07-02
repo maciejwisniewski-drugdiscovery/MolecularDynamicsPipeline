@@ -1,0 +1,167 @@
+# PLINDER Dynamics Pipeline - Example Configuration File
+# 
+# This is a comprehensive example showing all configuration options.
+# Copy this file and modify the paths and parameters for your specific simulation.
+#
+# Author: Maciej Wisniewski
+# Email: m.wisniewski@datascience.edu.pl
+
+# =============================================================================
+# SYSTEM INFORMATION
+# =============================================================================
+info:
+  system_id: "1abc_ligand_123"              # Unique identifier for your system
+  simulation_id: "bound_state_md_example"    # Description of this simulation
+  use_plinder_index: false                   # Set to true if using PLINDER database
+  bound_state: true                          # true = bound state, false = unbound state
+
+# =============================================================================
+# FILE PATHS
+# =============================================================================
+paths:
+  # Input structure files (modify these paths for your system)
+  raw_protein_files: 
+    - "path/to/your/protein.pdb"            # Path to protein structure file(s)
+  raw_ligand_files:
+    - "path/to/your/ligand.sdf"             # Path to ligand structure file(s)
+  
+  # Output directory (will be created if it doesn't exist)
+  output_dir: "output/1abc_ligand_123"      # Directory for simulation outputs
+
+# =============================================================================
+# PREPROCESSING PARAMETERS
+# =============================================================================
+preprocessing:
+  process_protein: true                      # Clean protein with PDBFixer
+  process_ligand: true                       # Process ligand with OpenFF
+  add_solvent: true                          # Add explicit water solvent
+  ionic_strength: 0.15                      # Salt concentration in M (physiological)
+  box_padding: 1.0                          # Solvent box padding in nm
+
+# =============================================================================
+# FORCE FIELD CONFIGURATION
+# =============================================================================
+forcefield:
+  # Protein force field options:
+  # - "amber14-all.xml" (recommended for most proteins)
+  # - "amber14/protein.ff14SB.xml" 
+  # - "amber99sbildn.xml"
+  proteinFF: "amber14-all.xml"
+  
+  # Nucleic acid force field (if present)
+  nucleicFF: "amber14/DNA.OL15.xml"
+  
+  # Ligand force field options:
+  # - "gaff-2.11" (GAFF, good for drug-like molecules)
+  # - "openff-2.0.0" (OpenFF, more accurate for small molecules)
+  # - "openff-2.1.0" (latest OpenFF version)
+  ligandFF: "gaff-2.11"
+  
+  # Water model - should match the protein force field
+  waterFF: "amber14/tip3pfb.xml"
+  water_model: "tip3p"
+  
+  # Additional force field parameters
+  forcefield_kwargs:
+    rigidWater: true                         # Keep water molecules rigid
+    removeCMMotion: false                    # Remove center-of-mass motion
+    hydrogenMass: 1.5                        # Hydrogen mass repartitioning (allows 2-4 fs timestep)
+
+# =============================================================================
+# SIMULATION PARAMETERS
+# =============================================================================
+simulation_params:
+  # Platform configuration
+  platform:
+    type: "CUDA"                             # Options: "CUDA", "OpenCL", "CPU"
+    devices: "0"                             # GPU device ID(s), e.g., "0" or "0,1" for multiple GPUs
+  
+  # Restraint parameters
+  backbone_restraint_force: 100.0            # Backbone restraint force in kcal/mol/Å²
+  
+  # Data collection options
+  save_forces: true                          # Save force data (useful for analysis)
+  save_hessian: false                        # Save Hessian matrices (memory intensive)
+  
+  # ==========================================================================
+  # SIMULATION STAGE PARAMETERS
+  # ==========================================================================
+  
+  # Stage 1: Warmup (gradual heating with backbone restraints)
+  warmup:
+    init_temp: 50.0                          # Initial temperature (K)
+    final_temp: 300.0                        # Final temperature (K)
+    friction: 1.0                            # Langevin friction coefficient (ps⁻¹)
+    time_step: 2.0                           # Integration timestep (fs)
+    heating_step: 100                        # Steps to increase temperature by 1K
+    checkpoint_interval: 1000                # Save checkpoint every N steps
+    trajectory_interval: 1000                # Save trajectory every N steps  
+    state_data_reporter_interval: 1000       # Report thermodynamic data every N steps
+  
+  # Stage 2: Backbone restraint removal
+  backbone_removal:
+    temp: 300.0                              # Temperature (K)
+    friction: 1.0                            # Langevin friction coefficient (ps⁻¹)
+    time_step: 2.0                           # Integration timestep (fs)
+    nsteps: 500_000                          # Total number of steps (1 ns)
+    nloops: 100                              # Number of restraint reduction loops
+    checkpoint_interval: 1_000               # Save checkpoint every N steps
+    trajectory_interval: 1_000               # Save trajectory every N steps
+    state_data_reporter_interval: 1_000     # Report data every N steps
+  
+  # Stage 3: NVT equilibration (constant volume and temperature)
+  nvt:
+    temp: 300.0                              # Temperature (K)
+    friction: 1.0                            # Langevin friction coefficient (ps⁻¹)
+    time_step: 2.0                           # Integration timestep (fs)
+    nsteps: 500_000                          # Total number of steps (1 ns)
+    checkpoint_interval: 1000                # Save checkpoint every N steps
+    trajectory_interval: 1000                # Save trajectory every N steps
+    state_data_reporter_interval: 1000      # Report data every N steps
+  
+  # Stage 4: NPT equilibration (constant pressure and temperature)
+  npt:
+    temp: 300.0                              # Temperature (K)
+    pressure: 1.0                            # Pressure in bar (1 bar = 1 atm)
+    friction: 1.0                            # Langevin friction coefficient (ps⁻¹)
+    time_step: 2.0                           # Integration timestep (fs)
+    nsteps: 500_000                          # Total number of steps (1 ns)
+    checkpoint_interval: 1_000               # Save checkpoint every N steps
+    trajectory_interval: 1_000               # Save trajectory every N steps
+    state_data_reporter_interval: 1_000     # Report data every N steps
+  
+  # Stage 5: Production run (main simulation)
+  production:
+    temp: 300.0                              # Temperature (K)
+    pressure: 1.0                            # Pressure in bar
+    friction: 1.0                            # Langevin friction coefficient (ps⁻¹)
+    time_step: 2.0                           # Integration timestep (fs)
+    nsteps: 50_000_000                       # Total number of steps (100 ns)
+    checkpoint_interval: 1_000               # Save checkpoint every N steps (2 ps)
+    trajectory_interval: 1_000               # Save trajectory every N steps (2 ps)
+    state_data_reporter_interval: 1_000     # Report data every N steps (2 ps)
+
+# =============================================================================
+# NOTES AND RECOMMENDATIONS
+# =============================================================================
+#
+# Time Calculations:
+# - With time_step = 2.0 fs:
+#   - 1,000 steps = 2 ps
+#   - 500,000 steps = 1 ns
+#   - 50,000,000 steps = 100 ns
+#
+# Force Field Recommendations:
+# - For general proteins: amber14-all.xml + gaff-2.11
+# - For high accuracy: amber14-all.xml + openff-2.0.0
+# - For drug discovery: amber14-all.xml + gaff-2.11
+#
+# Hardware Recommendations:
+# - GPU: NVIDIA GPU with CUDA support (GTX 1080 or better)
+# - RAM: 16 GB minimum, 32 GB recommended for large systems
+# - Storage: SSD recommended for faster I/O
+#
+# Typical Simulation Times (on modern GPU):
+# - Small protein + ligand (~50K atoms): ~1-2 hours per ns
+# - Medium protein + ligand (~100K atoms): ~3-4 hours per ns
+# - Large protein complex (~200K atoms): ~6-8 hours per ns 

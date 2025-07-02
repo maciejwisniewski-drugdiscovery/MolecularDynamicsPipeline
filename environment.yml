@@ -1,0 +1,64 @@
+name: plinder_dynamics
+channels:
+  - conda-forge
+  - bioconda
+  - omnia
+  - openeye
+dependencies:
+  # Python
+  - python=3.11
+  
+  # Core scientific computing
+  - numpy>=1.21.0
+  - scipy>=1.10.0
+  - pandas>=1.5.0
+  
+  # Molecular dynamics and simulation
+  - openmm>=7.7.0
+  - openmmforcefields
+  - openff-toolkit>=0.16.9
+  - pdbfixer
+  - pdb2pqr>=3.0.0
+  
+  # Chemical informatics
+  - rdkit>=2022.9.1
+  - openbabel
+  
+  # Configuration and data handling
+  - pyyaml>=6.0.0
+  - jinja2
+  - python-dotenv
+  - pathlib
+  - importlib-resources
+  
+  # Progress and utilities
+  - tqdm>=4.65.0
+  - cachetools
+  
+  # Structural biology
+  - biotite=1.2.0
+  
+  # Build tools
+  - pip
+  - setuptools
+  - wheel
+  
+  # Development tools (optional)
+  - pytest
+  - black
+  - flake8
+  - jupyter
+  - ipython
+  
+  # Visualization (optional)
+  - matplotlib
+  - seaborn
+  - plotly
+  
+  # GPU support (optional, comment out if no CUDA)
+  - cudatoolkit=11.8  # Adjust version based on your CUDA installation
+  
+  # Pip dependencies (packages not available in conda)
+  - pip:
+    - plinder
+    - -e . 

@@ -1,496 +1,356 @@
 # Molecular Dynamics Simulation Pipeline
 
-A comprehensive molecular dynamics simulation pipeline built with OpenMM, supporting protein-ligand systems with multiple stages of simulation including warmup, backbone constraint removal, NVT, NPT, and production runs.
+A comprehensive molecular dynamics simulation pipeline for protein-ligand systems, built with OpenMM and designed for high-throughput screening and detailed biomolecular analysis. This pipeline supports multi-stage MD simulations with advanced bond preservation, checkpoint recovery, and SLURM cluster integration.
 
-## Features
+## 🚀 Features
 
-- Multi-stage molecular dynamics simulation pipeline
-- Support for protein-ligand systems
-- Automatic system preparation and solvation
-- Configurable force fields and simulation parameters
-- Checkpoint-based simulation recovery
-- Extensive logging and monitoring
-- Support for multiple GPUs
+- **Multi-stage MD simulation pipeline**: Warmup → Backbone restraint removal → NVT → NPT → Production
+- **Checkpoint-based recovery**: Resume interrupted simulations from any stage
+- **SLURM cluster integration**: High-throughput batch processing capabilities
+- **Multiple file format support**: PDB, CIF, SDF, MOL2 with proper bond handling
+- **Comprehensive reporting**: Forces, trajectories, thermodynamic data, and Hessians
+- **GPU acceleration**: CUDA and OpenCL platform support
+- **Flexible force fields**: AMBER, GAFF, OpenFF with customizable parameters
 
-## Prerequisites
+## 📋 Prerequisites
 
-- Python 3.11
-- OpenMM
-- OpenFF Toolkit
-- RDKit
-- OpenBabel
-- pdb2pqr
-- PDBFixer
+- **Python**: 3.7-3.12 (recommended: 3.11)
+- **CUDA**: For GPU acceleration (optional but recommended)
+- **Git**: For installation from source
+- **Conda/Mamba**: For environment management
 
-## Input Requirements
+## 🔧 Installation
 
-### Structure Files
+### Method 1: Installation with Conda Environment (Recommended)
 
-1. **Protein Files**:
-   - Supported formats: PDB, CIF
-   - Can handle multiple protein chains
-   - Files should be specified in the configuration under `raw_protein_files`
+1. **Clone the repository**:
+   ```bash
+   git clone https://github.com/your-org/plinder_dynamics.git
+   cd plinder_dynamics
+   ```
 
-2. **Ligand Files**:
-   - Supported formats: SDF, MOL2
-   - Can handle multiple ligands
-   - Files should be specified in the configuration under `raw_ligand_files`
+2. **Create conda environment from YAML**:
+   ```bash
+   conda env create -f environment.yml
+   conda activate plinder_dynamics
+   ```
 
-### Configuration Files
+3. **Install the package in development mode**:
+   ```bash
+   pip install -e .
+   ```
 
-The pipeline requires YAML configuration files with the following structure:
+### Method 2: Manual Installation
 
-```yaml
-info:
-  simulation_id: "unique_simulation_id"
-  system_id: "system_identifier"
-  use_plinder_index: false  # Optional
+1. **Create a new conda environment**:
+   ```bash
+   conda create -n plinder_dynamics python=3.11
+   conda activate plinder_dynamics
+   ```
 
-paths:
-  raw_protein_files: ["path/to/protein.pdb"]
-  raw_ligand_files: ["path/to/ligand.sdf"]
-  output_dir: "path/to/output"
+2. **Install OpenMM and dependencies**:
+   ```bash
+   conda install -c conda-forge openmm rdkit openbabel pdbfixer
+   ```
 
-preprocessing:
-  process_protein: true
-  process_ligand: true
-  add_solvate: true
-  box_padding: 1.0  # nm
-  ionic_strength: 0.15  # M
+3. **Install the package**:
+   ```bash
+   pip install -e .
+   ```
 
-forcefield:
-  proteinFF: "amber14/protein.ff14SB.xml"
-  nucleicFF: "amber14/DNA.OL15.xml"
-  waterFF: "amber14/tip3p.xml"
-  ligandFF: "openff-2.0.0"
-  water_model: "tip3p"
-  forcefield_kwargs:
-    constraints: "HBonds"
-    rigidWater: true
-    removeCMMotion: false
-    hydrogenMass: 1.5
+### Verification
 
-simulation_params:
-  platform:
-    type: "CUDA"
-    devices: "0"
-  backbone_restraint_force: 100.0  # kcal/mol/Å²
+Test your installation:
+```bash
+# Quick test
+python -c "import dynamics_pipeline; print('Installation successful!')"
 
-  warmup:
-    init_temp: 0
-    final_temp: 300
-    friction: 1.0
-    time_step: 2.0
-    heating_step: 1000
-    checkpoint_interval: 1000
-    trajectory_interval: 1000
-    state_data_reporter_interval: 1000
-
-  backbone_removal:
-    temp: 300
-    friction: 1.0
-    time_step: 2.0
-    nsteps: 100000
-    nloops: 100
-    checkpoint_interval: 1000
-    trajectory_interval: 1000
-    state_data_reporter_interval: 1000
-
-  nvt:
-    temp: 300
-    friction: 1.0
-    time_step: 2.0
-    nsteps: 100000
-    checkpoint_interval: 1000
-    trajectory_interval: 1000
-    state_data_reporter_interval: 1000
-
-  npt:
-    temp: 300
-    friction: 1.0
-    time_step: 2.0
-    pressure: 1.0
-    nsteps: 100000
-    checkpoint_interval: 1000
-    trajectory_interval: 1000
-    state_data_reporter_interval: 1000
-
-  production:
-    temp: 300
-    friction: 1.0
-    time_step: 2.0
-    pressure: 1.0
-    nsteps: 1000000
-    checkpoint_interval: 1000
-    trajectory_interval: 1000
-    state_data_reporter_interval: 1000
+# Comprehensive validation (recommended)
+python scripts/validate_installation.py
 ```
 
-## Output Directory Structure
+The validation script will check:
+- Python version compatibility
+- All required dependencies
+- GPU/CUDA support
+- Basic OpenMM functionality
 
-```
-output_dir/
-├── checkpoints/
-│   ├── {system_id}_warmup_checkpoint.dcd
-│   ├── {system_id}_backbone_removal_checkpoint.dcd
-│   ├── {system_id}_nvt_checkpoint.dcd
-│   ├── {system_id}_npt_checkpoint.dcd
-│   └── {system_id}_production_checkpoint.dcd
-├── trajectories/
-│   ├── {system_id}_warmup_trajectory.xtc
-│   ├── {system_id}_backbone_removal_trajectory.xtc
-│   ├── {system_id}_nvt_trajectory.xtc
-│   ├── {system_id}_npt_trajectory.xtc
-│   └── {system_id}_production_trajectory.xtc
-├── state_data_reporters/
-│   ├── {system_id}_warmup_state_data.csv
-│   ├── {system_id}_backbone_removal_state_data.csv
-│   ├── {system_id}_nvt_state_data.csv
-│   ├── {system_id}_npt_state_data.csv
-│   └── {system_id}_production_state_data.csv
-├── states/
-│   ├── {system_id}_warmup_state.xml
-│   ├── {system_id}_backbone_removal_state.xml
-│   ├── {system_id}_nvt_state.xml
-│   ├── {system_id}_npt_state.xml
-│   └── {system_id}_production_state.xml
-├── topologies/
-│   ├── {system_id}_warmup_topology.cif
-│   ├── {system_id}_backbone_removal_topology.cif
-│   ├── {system_id}_nvt_topology.cif
-│   ├── {system_id}_npt_topology.cif
-│   └── {system_id}_production_topology.cif
-├── {system_id}_init_complex.cif
-├── {system_id}_init_topology.cif
-├── {system_id}_init_system.xml
-└── {system_id}_init_system_with_posres.xml
-```
-
-## Directory Structure
+## 📁 Project Structure
 
 ```
 plinder_dynamics/
-├── config/
-│   ├── plinder_parameters_bound.yaml     # Configuration for bound state simulations
-│   ├── plinder_parameters_unbound.yaml   # Configuration for unbound state simulations
-│   ├── misato_parameters.yaml            # Configuration for MISATO simulations
-│   └── simulation_parameters.yaml        # Base simulation parameters
-├── scripts/
-│   ├── filters/
-│   │   ├── train_plinder.yaml           # Filter for training set
-│   │   └── test_plinder.yaml            # Filter for test set
-│   ├── run_single_plinder_simulation.py  # Run single system simulation
-│   ├── run_single_misato_simulation.py   # Run single MISATO simulation
-│   ├── run_simulation.py                 # Generic simulation runner
-│   └── fix_autodock_molecules.py         # Utility for fixing AutoDock output
-└── src/
-    └── dynamics_pipeline/
-        ├── simulation/
-        ├── data/
-        └── utils/
+├── config/                           # Configuration templates
+│   ├── plinder_parameters_bound.yaml      # Bound state simulations
+│   ├── plinder_parameters_unbound.yaml    # Unbound state simulations  
+│   ├── plinder_parameters_metadynamics.yaml # Enhanced sampling
+│   ├── misato_parameters.yaml             # MISATO dataset configs
+│   └── simulation_parameters.yaml         # Base parameters
+├── scripts/                          # Execution scripts
+│   ├── run_simulation.py                 # Main simulation runner
+│   ├── plinder_scripts/                  # PLINDER-specific scripts
+│   └── misato_scripts/                   # MISATO-specific scripts
+├── src/dynamics_pipeline/            # Core pipeline modules
+│   ├── simulation/                       # MD simulation engine
+│   ├── data/                            # Data handling and processing
+│   └── utils/                           # Utilities and helpers
+├── environment.yml                   # Conda environment specification
+└── setup.py                        # Package installation
 ```
 
-## Scripts Usage
+## ⚙️ Configuration
 
-### Running Simulations
+### Configuration File Structure
 
-1. **Single System Simulation**:
+The pipeline uses YAML configuration files with the following sections:
+
+#### 1. System Information (`info`)
+```yaml
+info:
+  system_id: "1abc_ligand_123"        # Unique system identifier
+  simulation_id: "bound_state_md"      # Simulation identifier
+  use_plinder_index: true             # Use PLINDER database integration
+  bound_state: true                   # Bound vs unbound simulation
+```
+
+#### 2. File Paths (`paths`)
+```yaml
+paths:
+  raw_protein_files: 
+    - "path/to/protein.pdb"           # Protein structure files
+  raw_ligand_files:
+    - "path/to/ligand.sdf"            # Ligand structure files  
+  output_dir: "path/to/output"        # Output directory
+```
+
+#### 3. Preprocessing Parameters (`preprocessing`)
+```yaml
+preprocessing:
+  process_protein: true               # Clean protein with PDBFixer
+  process_ligand: true                # Process ligand with OpenFF
+  add_solvent: true                   # Add explicit solvent
+  ionic_strength: 0.15                # Salt concentration (M)
+  box_padding: 1.0                    # Solvent box padding (nm)
+```
+
+#### 4. Force Field Configuration (`forcefield`)
+```yaml
+forcefield:
+  proteinFF: "amber14-all.xml"        # Protein force field
+  nucleicFF: "amber14/DNA.OL15.xml"   # Nucleic acid force field
+  ligandFF: "gaff-2.11"               # Ligand force field (gaff-2.11, openff-2.0.0)
+  waterFF: "amber14/tip3pfb.xml"      # Water model
+  water_model: "tip3p"                # Water model name
+  forcefield_kwargs:                  # Additional FF parameters
+    rigidWater: true
+    removeCMMotion: false
+    hydrogenMass: 1.5                 # Hydrogen mass repartitioning
+```
+
+**Force Field Options**:
+- **Protein**: `amber14-all.xml`, `amber14/protein.ff14SB.xml`, `amber99sbildn.xml`
+- **Ligand**: `gaff-2.11`, `openff-2.0.0`, `openff-2.1.0`
+- **Water**: `tip3p`, `tip4pew`, `spce`
+
+#### 5. Simulation Parameters (`simulation_params`)
+
+**Platform Configuration**:
+```yaml
+simulation_params:
+  platform:
+    type: "CUDA"                      # Platform: CUDA, OpenCL, CPU
+    devices: "0"                      # GPU device indices
+  backbone_restraint_force: 100.0     # Backbone restraint (kcal/mol/Å²)
+  save_forces: true                   # Save force data
+  save_hessian: false                 # Save Hessian matrices
+```
+
+**Stage-Specific Parameters**:
+
+Each simulation stage (warmup, backbone_removal, nvt, npt, production) supports:
+
+```yaml
+  warmup:
+    init_temp: 50.0                   # Initial temperature (K)
+    final_temp: 300.0                 # Final temperature (K)
+    friction: 1.0                     # Langevin friction (ps⁻¹)
+    time_step: 2.0                    # Integration timestep (fs)
+    heating_step: 100                 # Steps per 1K temperature increase
+    checkpoint_interval: 1000         # Checkpoint frequency
+    trajectory_interval: 1000         # Trajectory save frequency
+    state_data_reporter_interval: 1000 # State data frequency
+```
+
+### Creating Configuration Files
+
+1. **Copy a template**:
    ```bash
-   python scripts/run_simulation.py \
-     --config path/to/config.yaml \
+   cp config/plinder_parameters_bound.yaml my_simulation.yaml
    ```
 
-   Arguments:
-   - `--config_template`: Path to configuration file
+2. **Edit required fields**:
+   - Set `system_id` and `simulation_id`
+   - Update file paths in `paths` section
+   - Adjust simulation parameters as needed
 
-2. **Plinder System Simulation**:
+3. **Validate configuration**:
    ```bash
-   python scripts/run_single_plinder_simulation.py \
-     --config_template config/plinder_parameters_bound.yaml \
-     --filters scripts/filters/train_plinder.yaml \
-     --output_dir /path/to/output \
-     --parallel 4
+   python scripts/run_simulation.py --config my_simulation.yaml --validate-only
    ```
 
-   Arguments:
-   - `--config_template`: Path to configuration template
-   - `--filters`: Path to system filters file
-   - `--output_dir`: Output directory for simulations
-   - `--parallel`: Number of parallel processes (default: 1)
-   - `--overwrite`: Overwrite existing simulations (default: False)
+## 🏃 Usage
 
-3. **MISATO Simulation**:
-   ```bash
-   python scripts/run_single_misato_simulation.py \
-     --config config/misato_parameters.yaml \
-     --output_dir /path/to/output
-   ```
+### Basic Simulation Execution
 
-3. **MISATO Unbound Generator - Fast **:
-   ```bash
-   python scripts/generate_mc_misato_unbound.py \
-     --output_dir             path to output dir \
-     --misato_ids_filepath    path to misato txt filepath with misato ids to calculate \
-     --misato_dir             path to misato simulation cif.gz complexes dir \
-     --ccd_pkl                path to CCD.pkl file with parsed rdkit.Chem.Mo ligands \
-     --method                 mc or mcmc \
-     --offset_a               offset \
-     --distance_a             maximum distance between ligand and protein atoms
-     --distance_b             minimum distance between two conformers
-     --distance_c             minimum distance between ligand and protein atoms
-     --num_conformers_to_generate      number of unique ligand conformers from rdkit
-     --n_samples              number of structures before clustering
-     --z_samples              number of final structures
-     --max_trials             number of monte carlo attempts
-   ```
-
-### Environment Setup
-
-Required environment variables:
+**Single simulation**:
 ```bash
-export PLINDER_MOUNT='/path/to/data'
-export PLINDER_RELEASE='2024-06'
-export PLINDER_ITERATION='v2'
-export PLINDER_OFFLINE='true'
+python scripts/run_simulation.py --config config/my_simulation.yaml
 ```
 
-## Configuration System
+**With custom output directory**:
+```bash
+python scripts/run_simulation.py \
+  --config config/my_simulation.yaml \
+  --output-dir /path/to/output
+```
 
-### Bound vs Unbound States
+**Resume from checkpoint**:
+```bash
+python scripts/run_simulation.py \
+  --config config/my_simulation.yaml \
+  --resume
+```
 
-The pipeline supports both bound and unbound state simulations:
+### Advanced Options
 
-1. **Bound State**:
-   - The name can be misleading but by dyfeault `bound_state:` in config file is set `True`
-   - It's classical MD Simualtion
+**Run specific stages only**:
+```bash
+python scripts/run_simulation.py \
+  --config config/my_simulation.yaml \
+  --stages warmup,nvt,production
+```
 
-2. **Unbound State**:
-   - Simulates protein and ligand separately
-   - When `bound_states` is set `False`, ligands are moved by random vector on sphere to simulate unbound state of protein - ligand complex 
+**Validation mode** (check config without running):
+```bash
+python scripts/run_simulation.py \
+  --config config/my_simulation.yaml \
+  --validate-only
+```
 
-## Preprocessing Mechanisms
+**Verbose logging**:
+```bash
+python scripts/run_simulation.py \
+  --config config/my_simulation.yaml \
+  --log-level DEBUG
+```
 
-### Protein Preprocessing
+### PLINDER Integration
 
-1. **PDBFixer Processing**:
-   - Finds and adds missing residues
-   - Replaces non-standard residues
-   - Adds missing heavy atoms
-   - Adds missing hydrogens at specified pH
-   - Outputs standardized PDB file
+For PLINDER database systems:
+```bash
+python scripts/plinder_scripts/run_single_plinder_simulation.py \
+  --plinder_id "1abc__1.00__ligand_113" \
+  --config config/plinder_parameters_bound.yaml \
+  --output-dir /path/to/output
+```
 
-2. **PDB2PQR Processing**:
-   - Assigns protonation states
-   - Optimizes hydrogen bonding network
-   - Assigns atomic charges and radii
-   - Repairs broken side chains
+## 📊 Output Structure
 
-### Ligand Preprocessing
+```
+output_directory/
+├── forcefields/                      # Ligand topology with bonds
+│   ├── {ligand_name}_topology.sdf         # SDF format with bonds
+│   ├── {ligand_name}_topology.mol2        # MOL2 format with bonds
+│   └── {ligand_name}_info.yaml            # Ligand metadata
+├── trajectories/                     # Simulation trajectories
+│   ├── {system_id}_warmup_trajectory.npz       # NPZ trajectory data
+│   ├── {system_id}_nvt_trajectory.npz          # NPZ trajectory data
+│   └── {system_id}_production_trajectory.npz   # NPZ trajectory data
+├── checkpoints/                      # Checkpoint files for recovery
+│   ├── {system_id}_warmup_checkpoint.dcd
+│   └── {system_id}_production_checkpoint.dcd
+├── state_data_reporters/             # Thermodynamic data
+│   ├── {system_id}_warmup_state_data.csv
+│   └── {system_id}_production_state_data.csv
+├── states/                          # XML state files
+├── topologies/                      # Structure files with bonds
+│   ├── {system_id}_warmup_topology.cif
+│   └── {system_id}_production_topology.cif
+├── forces/                          # Force data (if enabled)
+│   └── {system_id}_production_forces.npy
+├── hessians/                        # Hessian matrices (if enabled)
+│   └── {system_id}_production_hessian.npy
+└── {system_id}_init_complex.cif     # Initial system structure
+```
 
-1. **Structure Preparation**:
-   - Converts input format to OpenFF molecule
-   - Assigns atom types and parameters
-   - Generates 3D conformers if needed
-   - Validates molecular structure
+## 🧬 Bond Preservation
 
-2. **Charge Assignment**:
-   - Uses Gasteiger charge method by default
-   - Stores charges in configuration
-   - Supports custom charge assignments
-   - Validates total molecular charge
+This pipeline preserves ligand bond connectivity throughout simulations:
 
-3. **Force Field Assignment**:
-   - Uses OpenFF force field
-   - Generates parameters for all atom types
-   - Validates parameter coverage
-   - Handles special atom types
+- **Input processing**: Loads ligands with OpenFF/RDKit maintaining bond orders
+- **Topology saving**: Exports CIF files with explicit bond information  
+- **Multi-format output**: SDF and MOL2 files preserve bond connectivity
+- **Metadata tracking**: YAML files contain bond and charge information
 
-### System Setup
+## 🔬 Analysis Tools
 
-1. **Complex Building**:
-   - Combines processed protein and ligand
-   - Assigns chain IDs and residue names
-   - Validates structure integrity
-   - Creates initial topology
+Load and analyze simulation data:
 
-2. **Solvation**:
-   - Adds water box with specified padding
-   - Adds ions to neutralize system
-   - Sets ionic strength
-   - Validates system composition
+```python
+from dynamics_pipeline.utils.analysis import load_trajectory_data, load_force_data
 
-3. **Force Field Setup**:
-   - Combines protein and ligand parameters
-   - Adds solvent parameters
-   - Sets up periodic boundary conditions
-   - Validates parameter completeness
+# Load trajectory
+positions, metadata = load_trajectory_data("output/trajectories/system_production_trajectory.npz")
 
-## Troubleshooting
+# Load forces
+forces = load_force_data("output/forces/system_production_forces.npy")
 
-Common issues and solutions:
+# Convert to XYZ for visualization
+from dynamics_pipeline.utils.analysis import trajectory_to_xyz
+trajectory_to_xyz("trajectory.npz", "system.xyz")
+```
 
-1. **CUDA Errors**:
-   - Ensure CUDA drivers are installed
-   - Check GPU visibility with `nvidia-smi`
-   - Verify OpenMM CUDA support
-   - Try running with `--force_cpu`
+## 🖥️ SLURM Cluster Usage
 
-2. **Memory Issues**:
-   - Reduce system size or padding
-   - Decrease parallel processes
-   - Monitor GPU memory usage
-   - Use smaller trajectory save intervals
+For high-throughput simulations on SLURM clusters, see the provided SLURM integration scripts in the `scripts/` directory.
 
-3. **Simulation Instability**:
-   - Check input structure quality
-   - Validate force field parameters
-   - Adjust time step and constraints
-   - Monitor energy conservation
+## 🐛 Troubleshooting
 
-4. **Checkpoint Recovery**:
-   - Verify checkpoint file integrity
-   - Check file permissions
-   - Ensure consistent configuration
-   - Monitor disk space
+**Common Issues**:
 
-## Usage
+1. **CUDA errors**: Ensure CUDA toolkit matches OpenMM version
+2. **Memory issues**: Reduce trajectory saving frequency or use smaller systems
+3. **Bond connectivity lost**: Verify input files have explicit bonds (SDF/MOL2)
+4. **Checkpoint corruption**: Delete checkpoint files to restart from beginning
 
-1. **Create Configuration File**:
-   ```python
-   import yaml
-   
-   config = {
-       # Add configuration parameters as shown above
-   }
-   
-   with open('config.yaml', 'w') as f:
-       yaml.dump(config, f)
-   ```
+**Debugging**:
+```bash
+python scripts/run_simulation.py --config config.yaml --log-level DEBUG
+```
 
-2. **Run Simulation**:
-   ```python
-   from dynamics_pipeline.simulation.simulation import MDSimulation
-   
-   # Load configuration
-   with open('config.yaml', 'r') as f:
-       config = yaml.safe_load(f)
-   
-   # Initialize simulation
-   simulation = MDSimulation(config)
-   
-   # Set up system
-   simulation.set_system()
-   
-   # Run simulation stages
-   simulation.warmup()
-   simulation.remove_backbone_constraints()
-   simulation.nvt()
-   simulation.npt()
-   simulation.production()
-   ```
+## 📚 Citation
 
-## Simulation Stages
+If you use this pipeline in your research, please cite:
 
-1. **Warmup**:
-   - Gradually heats the system from initial to final temperature
-   - Maintains backbone position restraints
-   - Energy minimization at the start
-   - Outputs: Trajectory, checkpoint, state data, topology
+```bibtex
+@software{plinder_dynamics,
+  title={PLINDER Dynamics Pipeline},
+  author={Maciej Wisniewski},
+  year={2024},
+  url={https://github.com/your-org/plinder_dynamics}
+}
+```
 
-2. **Backbone Constraint Removal**:
-   - Gradually removes position restraints from protein backbone
-   - Maintains constant temperature
-   - Outputs: Trajectory, checkpoint, state data, topology
+## 🤝 Contributing
 
-3. **NVT Equilibration**:
-   - Constant volume and temperature
-   - No position restraints
-   - Outputs: Trajectory, checkpoint, state data, topology
+Contributions are welcome! Please see our contribution guidelines and submit pull requests.
 
-4. **NPT Equilibration**:
-   - Constant pressure and temperature
-   - System volume adjustment
-   - Outputs: Trajectory, checkpoint, state data, topology
+## 📄 License
 
-5. **Production**:
-   - Final simulation phase
-   - Constant pressure and temperature
-   - Longest duration
-   - Outputs: Trajectory, checkpoint, state data, topology
+This project is licensed under the MIT License - see the LICENSE file for details.
 
-## Monitoring and Analysis
+## 📞 Support
 
-Each simulation stage produces:
-- Trajectory files (.xtc format)
-- Checkpoint files for simulation recovery
-- State data reports (CSV) containing:
-  - Step number
-  - Potential energy
-  - Kinetic energy
-  - Temperature
-  - Volume
-  - Simulation speed
-  - Remaining time
-- System state files (XML)
-- Topology files (CIF)
-
-## Error Handling and Recovery
-
-The pipeline supports automatic recovery from checkpoints if a simulation is interrupted. Each stage checks for existing checkpoints and resumes from the last saved state if available.
-
-## Logging System
-
-The pipeline implements a comprehensive logging system with the following features:
-
-1. **Global Logger**:
-   - Tracks overall simulation progress
-   - Located in the main output directory under `logs/`
-   - Named `plinder_dynamics_TIMESTAMP.log`
-
-2. **System-Specific Loggers**:
-   - Each simulation gets its own logger
-   - Located in `output_dir/SYSTEM_ID/logs/`
-   - Named `plinder_dynamics_SYSTEM_ID_TIMESTAMP.log`
-   - Tracks detailed progress of individual simulation stages
-
-3. **Log Structure**:
-   ```
-   output_dir/
-   ├── logs/
-   │   └── plinder_dynamics_20240315_123456.log  # Global logger
-   ├── system1_simulation/
-   │   ├── logs/
-   │   │   └── plinder_dynamics_system1_20240315_123456.log
-   │   └── ...
-   ├── system2_simulation/
-   │   ├── logs/
-   │   │   └── plinder_dynamics_system2_20240315_123457.log
-   │   └── ...
-   └── ...
-   ```
-
-4. **Log Levels**:
-   - ERROR: Critical issues that prevent simulation completion
-   - WARNING: Non-critical issues that might affect results
-   - INFO: Progress updates and stage completion
-   - DEBUG: Detailed technical information
-
-5. **Log Format**:
-   ```
-   2024-03-15 12:34:56 - plinder_dynamics_system1 - INFO - Starting warmup phase
-   ```
-   Each log entry includes:
-   - Timestamp
-   - Logger name
-   - Log level
-   - Message
-
-6. **Parallel Processing**:
-   - In parallel mode, each process maintains its own system-specific logger
-   - Prevents log file conflicts between parallel simulations
-   - Global logger tracks overall progress
-
-7. **Error Handling**:
-   - Failed simulations are logged with full stack traces
-   - Errors are captured in both global and system-specific logs
-   - System-specific logs provide detailed context for debugging
+For questions and support:
+- **Issues**: GitHub Issues
+- **Email**: m.wisniewski@datascience.edu.pl
+- **Documentation**: See `docs/` directory for detailed API documentation

@@ -27,12 +27,12 @@ setup(
         'biotite==1.2.0',
         'cachetools',
         'plinder',
-        'importlib-resources'
+        'importlib-resources',
         'python-dotenv',
         'jinja2'
     ],
     package_dir={'': 'src'},
-    python_requires='>=3.7, <3.12',
+    python_requires='>=3.7, <3.13',
     include_package_data=True,
     classifiers=[
         'Programming Language :: Python :: 3',
