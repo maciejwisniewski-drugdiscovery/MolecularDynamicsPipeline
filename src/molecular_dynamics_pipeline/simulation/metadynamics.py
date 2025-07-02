@@ -1,11 +1,11 @@
 import os
 from openmmplumed import PlumedForce
-from dynamics_pipeline.simulation.simulation import MDSimulation
+from molecular_dynamics_pipeline.simulation.simulation import MDSimulation
 from openmm import XmlSerializer, app, unit
 from openmm.app.modeller import Modeller
 from openmmforcefields.generators import SystemGenerator
 from biotite.structure.io.pdbx import CIFFile, get_structure
-from dynamics_pipeline.simulation.simulation import add_backbone_posres
+from molecular_dynamics_pipeline.simulation.simulation import add_backbone_posres
 import numpy as np
 from scipy.spatial import cKDTree
 

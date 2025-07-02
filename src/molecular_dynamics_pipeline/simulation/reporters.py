@@ -2,7 +2,7 @@ import os
 import numpy as np
 import logging
 from openmm import unit
-from dynamics_pipeline.utils.logger import setup_logger, log_info, log_error, log_warning, log_debug
+from molecular_dynamics_pipeline.utils.logger import setup_logger, log_info, log_error, log_warning, log_debug
 
 logger = setup_logger(name="plinder_dynamics", log_level=logging.INFO)
 

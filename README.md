@@ -25,35 +25,17 @@ A comprehensive molecular dynamics simulation pipeline for protein-ligand system
 
 1. **Clone the repository**:
    ```bash
-   git clone https://github.com/your-org/plinder_dynamics.git
-   cd plinder_dynamics
+   git clone https://github.com/maciejwisniewski-drugdiscovery/MolecularDynamicsPipeline.git
+   cd MolecularDynamicsPipeline
    ```
 
 2. **Create conda environment from YAML**:
    ```bash
    conda env create -f environment.yml
-   conda activate plinder_dynamics
+   conda activate molecular_dynamics_pipeline
    ```
 
 3. **Install the package in development mode**:
-   ```bash
-   pip install -e .
-   ```
-
-### Method 2: Manual Installation
-
-1. **Create a new conda environment**:
-   ```bash
-   conda create -n plinder_dynamics python=3.11
-   conda activate plinder_dynamics
-   ```
-
-2. **Install OpenMM and dependencies**:
-   ```bash
-   conda install -c conda-forge openmm rdkit openbabel pdbfixer
-   ```
-
-3. **Install the package**:
    ```bash
    pip install -e .
    ```
@@ -63,10 +45,7 @@ A comprehensive molecular dynamics simulation pipeline for protein-ligand system
 Test your installation:
 ```bash
 # Quick test
-python -c "import dynamics_pipeline; print('Installation successful!')"
-
-# Comprehensive validation (recommended)
-python scripts/validate_installation.py
+python -c "import molecular_dynamics_pipeline; print('Installation successful!')"
 ```
 
 The validation script will check:
@@ -291,23 +270,6 @@ This pipeline preserves ligand bond connectivity throughout simulations:
 - **Multi-format output**: SDF and MOL2 files preserve bond connectivity
 - **Metadata tracking**: YAML files contain bond and charge information
 
-## 🔬 Analysis Tools
-
-Load and analyze simulation data:
-
-```python
-from dynamics_pipeline.utils.analysis import load_trajectory_data, load_force_data
-
-# Load trajectory
-positions, metadata = load_trajectory_data("output/trajectories/system_production_trajectory.npz")
-
-# Load forces
-forces = load_force_data("output/forces/system_production_forces.npy")
-
-# Convert to XYZ for visualization
-from dynamics_pipeline.utils.analysis import trajectory_to_xyz
-trajectory_to_xyz("trajectory.npz", "system.xyz")
-```
 
 ## 🖥️ SLURM Cluster Usage
 
@@ -332,11 +294,11 @@ python scripts/run_simulation.py --config config.yaml --log-level DEBUG
 If you use this pipeline in your research, please cite:
 
 ```bibtex
-@software{plinder_dynamics,
-  title={PLINDER Dynamics Pipeline},
+@software{MolecularDynamicsPipeline,
+  title={Molecular Dynamics Pipeline},
   author={Maciej Wisniewski},
   year={2024},
-  url={https://github.com/your-org/plinder_dynamics}
+  url={https://github.com/maciejwisniewski-drugdiscovery/MolecularDynamicsPipeline}
 }
 ```
 

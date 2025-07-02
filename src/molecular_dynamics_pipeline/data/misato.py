@@ -20,7 +20,7 @@ from tqdm import tqdm
 from rdkit import Chem
 from rdkit.Chem import AllChem
 
-from dynamics_pipeline.data.small_molecule import make_unbound
+from molecular_dynamics_pipeline.data.small_molecule import make_unbound
 
 def load_misato_ids(misato_ids_filepath: str):
     assert os.path.exists(misato_ids_filepath), f"Misato IDs file {misato_ids_filepath} does not exist!"

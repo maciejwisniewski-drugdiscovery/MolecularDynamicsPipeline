@@ -1,4 +1,4 @@
-name: plinder_dynamics
+name: molecular_dynamics_pipeline
 channels:
   - conda-forge
   - bioconda

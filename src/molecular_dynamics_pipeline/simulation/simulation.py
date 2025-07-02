@@ -19,11 +19,11 @@ from openmm.app import ForceField
 from openmmforcefields.generators import SystemGenerator, GAFFTemplateGenerator
 
 from plinder.core.scores import query_index
-from dynamics_pipeline.utils.errors import NoneLigandError, NoneConformerError
-from dynamics_pipeline.utils.logger import setup_logger, log_info, log_error, log_warning, log_debug
-from dynamics_pipeline.utils.preprocessing import download_nonstandard_residue
-from dynamics_pipeline.data.small_molecule import load_molecule_to_openmm
-from dynamics_pipeline.data.biomolecules import fix_biomolecule_with_pdb2pqr
+from molecular_dynamics_pipeline.utils.errors import NoneLigandError, NoneConformerError
+from molecular_dynamics_pipeline.utils.logger import setup_logger, log_info, log_error, log_warning, log_debug
+from molecular_dynamics_pipeline.utils.preprocessing import download_nonstandard_residue
+from molecular_dynamics_pipeline.data.small_molecule import load_molecule_to_openmm
+from molecular_dynamics_pipeline.data.biomolecules import fix_biomolecule_with_pdb2pqr
 
 logger = setup_logger(name="plinder_dynamics", log_level=logging.INFO)
 

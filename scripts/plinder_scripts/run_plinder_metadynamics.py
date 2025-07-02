@@ -9,9 +9,9 @@ import multiprocessing as mp
 from functools import partial
 
 import logging
-from dynamics_pipeline.utils.logger import setup_logger, log_info, log_error, log_warning, log_debug
-from dynamics_pipeline.simulation.metadynamics import MetaMDSimulation
-from dynamics_pipeline.data.plinder import load_plinder_ids, create_system_config
+from molecular_dynamics_pipeline.utils.logger import setup_logger, log_info, log_error, log_warning, log_debug
+from molecular_dynamics_pipeline.simulation.metadynamics import MetaMDSimulation
+from molecular_dynamics_pipeline.data.plinder import load_plinder_ids, create_system_config
 
 random.seed(42)
 

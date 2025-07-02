@@ -14,8 +14,8 @@ from typing import Optional
 from pathlib import Path
 from plinder.core.scores import query_index
 import yaml
-from dynamics_pipeline.data.small_molecule import fix_molecule_with_pybel, create_unbound_ligand_files
-from dynamics_pipeline.data.biomolecules import fix_biomolecule_with_pdb2pqr
+from molecular_dynamics_pipeline.data.small_molecule import fix_molecule_with_pybel, create_unbound_ligand_files
+from molecular_dynamics_pipeline.data.biomolecules import fix_biomolecule_with_pdb2pqr
 
 class PlinderFilters:
     """Class for handling Plinder filtering configurations.

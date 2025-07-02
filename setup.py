@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(
-    name='dynamics_pipeline',
+    name='molecular_dynamics_pipeline',
     version='0.1.0',
     description='Molecular Dynamics Pipeline for Biomolecule Complexes',
     author='Maciej Wisniewski',
