@@ -133,6 +133,7 @@ def main():
     parser.add_argument('--config_template', type=str, required=False, help='Path to config template file', default='config/plinder_parameters_bound.yaml')
     parser.add_argument('--filters', type=str, required=False, help='Filters to apply to the PLINDER systems', default='scripts/plinder_scripts/filters/train_plinder.yaml')
     parser.add_argument('--plinder_id', type=str, required=False, help='Single PLINDER ID to run (overrides filters)')
+    parser.add_argument('--plinder_ids_file', type=str, required=False, help='File containing PLINDER IDs to run')
     parser.add_argument('--output_dir', type=str, required=False, help='Output directory', default=os.getenv('OUTPUT_DIR'))
     parser.add_argument('--overwrite', type=bool, required=False, help='Overwrite existing simulation', default=False)
     parser.add_argument('--parallel', type=int, required=False, help='Number of parallel processes to use', default=1)
@@ -142,12 +143,20 @@ def main():
     os.makedirs(os.path.join(args.output_dir), exist_ok=True)
     # Load Config
     assert os.path.exists(args.config_template), f"Config file {args.config_template} does not exist!"
-
+    assert args.plinder_id is None or args.plinder_ids_file is None, "Only one of --plinder_id or --plinder_ids_file can be provided"
+    assert args.plinder_ids_file is None or os.path.exists(args.plinder_ids_file), f"File {args.plinder_ids_file} does not exist!"
+    if args.plinder_ids_file is not None and args.plinder_id is not None:
+        raise ValueError("Only one of --plinder_id or --plinder_ids_file can be provided")
+    
     # Determine which PLINDER IDs to process
     if args.plinder_id:
         # Single PLINDER ID provided
         plinder_ids = [args.plinder_id]
         log_info(logger, f"Running single simulation for PLINDER ID: {args.plinder_id}")
+    elif args.plinder_ids_file:
+        with open(args.plinder_ids_file, 'r') as f:
+            plinder_ids = [line.strip() for line in f.readlines()]
+        log_info(logger, f"Loaded {len(plinder_ids)} PLINDER IDs from file {args.plinder_ids_file}")
     else:
         # Load from filters
         plinder_ids = load_plinder_ids(args.filters)
