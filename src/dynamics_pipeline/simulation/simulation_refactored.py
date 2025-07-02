@@ -29,7 +29,7 @@ from dynamics_pipeline.utils.logger import setup_logger, log_info, log_error, lo
 from dynamics_pipeline.utils.preprocessing import download_nonstandard_residue
 from dynamics_pipeline.data.small_molecule import load_molecule_to_openmm
 from dynamics_pipeline.data.biomolecules import fix_biomolecule_with_pdb2pqr
-from dynamics_pipeline.simulation.reporters import ForceReporter, HessianReporter
+from dynamics_pipeline.simulation.reporters import ForceReporter, HessianReporter, TrajectoryReporter
 
 logger = setup_logger(name="plinder_dynamics", log_level=logging.INFO)
 
@@ -159,7 +159,7 @@ class MDSimulation:
         # Per-stage file paths
         path_configs = {
             'checkpoints': {'dir': 'checkpoints', 'suffix': 'checkpoint', 'ext': 'dcd'},
-            'trajectories': {'dir': 'trajectories', 'suffix': 'trajectory', 'ext': 'xtc'},
+            'trajectories': {'dir': 'trajectories', 'suffix': 'trajectory', 'ext': 'npz'},
             'state_reporters': {'dir': 'state_data_reporters', 'suffix': 'state_data', 'ext': 'csv'},
             'states': {'dir': 'states', 'suffix': 'state', 'ext': 'xml'},
             'topologies': {'dir': 'topologies', 'suffix': 'topology', 'ext': 'cif'},
@@ -847,11 +847,12 @@ class MDSimulation:
             reportInterval=params['checkpoint_interval']
         ))
         
-        # Trajectory Reporter (XTC)
-        simulation.reporters.append(app.XTCReporter(
+        # Trajectory Reporter (NPZ)
+        simulation.reporters.append(TrajectoryReporter(
             file=trajectory_path,
             reportInterval=params['trajectory_interval'],
-            append=Path(trajectory_path).exists()
+            total_steps=total_steps,
+            atom_indices=atom_indices
         ))
         
         # Forces Reporter
