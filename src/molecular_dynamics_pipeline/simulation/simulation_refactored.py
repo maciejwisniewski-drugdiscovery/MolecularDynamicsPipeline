@@ -817,10 +817,6 @@ class MDSimulation:
         excluded_counts = {'hydrogens': 0, 'excluded_residues': 0, 'wrong_chains': 0}
         
         for atom in simulation.topology.atoms():
-            # Skip hydrogens
-            if atom.element.symbol == 'H':
-                excluded_counts['hydrogens'] += 1
-                continue
             # Skip excluded residues (water, ions)
             if atom.residue.name in excluded_residues:
                 excluded_counts['excluded_residues'] += 1
