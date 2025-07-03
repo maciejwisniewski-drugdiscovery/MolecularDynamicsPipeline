@@ -28,7 +28,9 @@ from molecular_dynamics_pipeline.utils.errors import NoneLigandError, NoneConfor
 from molecular_dynamics_pipeline.utils.logger import setup_logger, log_info, log_error, log_warning, log_debug
 from molecular_dynamics_pipeline.utils.preprocessing import download_nonstandard_residue
 from molecular_dynamics_pipeline.data.small_molecule import load_molecule_to_openmm
-from molecular_dynamics_pipeline.simulation.reporters import ForceReporter, HessianReporter, TrajectoryReporter
+from molecular_dynamics_pipeline.simulation.reporters import ForceReporter, HessianReporter, load_trajectory_data
+from molecular_dynamics_pipeline.simulation.reporters import XTCReporter as own_XTCReporter
+
 from molecular_dynamics_pipeline.energy.energy import calculate_interaction_energies
 
 logger = setup_logger(name="plinder_dynamics", log_level=logging.INFO)
@@ -159,7 +161,7 @@ class MDSimulation:
         # Per-stage file paths
         path_configs = {
             'checkpoints': {'dir': 'checkpoints', 'suffix': 'checkpoint', 'ext': 'dcd'},
-            'trajectories': {'dir': 'trajectories', 'suffix': 'trajectory', 'ext': 'npz'},
+            'trajectories': {'dir': 'trajectories', 'suffix': 'trajectory', 'ext': 'xtc'},
             'state_reporters': {'dir': 'state_data_reporters', 'suffix': 'state_data', 'ext': 'csv'},
             'states': {'dir': 'states', 'suffix': 'state', 'ext': 'xml'},
             'topologies': {'dir': 'topologies', 'suffix': 'topology', 'ext': 'cif'},
@@ -265,6 +267,8 @@ class MDSimulation:
             self.config['info']['simulation_status'][stage] = status
         else:
             log_warning(logger, f"Attempted to update status for unknown stage: {stage}")
+
+
     
     def _get_chain_ids_from_file(self, filepath: str) -> list[str]:
         """
@@ -675,11 +679,13 @@ class MDSimulation:
             self.update_simulation_status(stage_name, 'Done')
             return
 
-        # 5. Setup Reporters
+        # 5. Setup Reporters and get atom indices
+        atom_indices = self._get_atom_indices_for_trajectory(simulation)
         self._set_reporters(
             simulation=simulation,
             stage_name=stage_name,
-            total_steps=params['nsteps']
+            total_steps=params['nsteps'],
+            atom_indices=atom_indices
         )
         
         # 6. Run Simulation
@@ -688,7 +694,7 @@ class MDSimulation:
         
         # 7. Save final state and topology
         simulation.saveState(paths['states'][f'{stage_name}_state_filepath'])
-        self._save_final_topology(simulation, stage_name)
+        self._save_final_topology(simulation, stage_name, atom_indices)
         
         self.update_simulation_status(stage_name, 'Done')
         log_info(logger, f"--- {stage_name.upper()} Stage Finished ---")
@@ -739,7 +745,9 @@ class MDSimulation:
             initial_temp = params['init_temp']
             log_info(logger, f"Starting fresh warmup from {initial_temp}K.")
 
-        self._set_reporters(simulation, 'warmup', total_heating_steps)
+        # Setup reporters with atom indices
+        atom_indices = self._get_atom_indices_for_trajectory(simulation)
+        self._set_reporters(simulation, 'warmup', total_heating_steps, atom_indices)
         
         simulation.context.setVelocitiesToTemperature(initial_temp * unit.kelvin)
         integrator.setTemperature(initial_temp * unit.kelvin)
@@ -751,7 +759,7 @@ class MDSimulation:
             simulation.step(heating_steps_per_degree)
         
         simulation.saveState(paths['states']['warmup_state_filepath'])
-        self._save_final_topology(simulation, 'warmup')
+        self._save_final_topology(simulation, 'warmup', atom_indices)
         self.update_simulation_status('warmup', 'Done')
         log_info(logger, f"--- WARMUP Stage Finished at {params['final_temp']}K ---")
 
@@ -787,7 +795,9 @@ class MDSimulation:
         initial_force = self.config['simulation_params']['backbone_restraint_force']
         force_decrement = initial_force / n_loops
 
-        self._set_reporters(simulation, 'backbone_removal', params['nsteps'])
+        # Setup reporters with atom indices
+        atom_indices = self._get_atom_indices_for_trajectory(simulation)
+        self._set_reporters(simulation, 'backbone_removal', params['nsteps'], atom_indices)
 
         for i in tqdm(range(n_loops), desc="Removing Constraints"):
             force_k = (initial_force - (i + 1) * force_decrement) * unit.kilocalories_per_mole / unit.angstroms**2
@@ -797,7 +807,7 @@ class MDSimulation:
         simulation.context.setParameter('k', 0.0) # Ensure it's fully off
         
         simulation.saveState(paths['states']['backbone_removal_state_filepath'])
-        self._save_final_topology(simulation, 'backbone_removal')
+        self._save_final_topology(simulation, 'backbone_removal', atom_indices)
         self.update_simulation_status('backbone_removal', 'Done')
         log_info(logger, "--- BACKBONE CONSTRAINT REMOVAL Stage Finished ---")
     
@@ -869,19 +879,20 @@ class MDSimulation:
     # HELPER METHODS
     # ==================================================================================================
 
-    def _set_reporters(self, simulation: app.Simulation, stage_name: str, total_steps: int):
+    def _get_atom_indices_for_trajectory(self, simulation: app.Simulation) -> list:
         """
-        Sets up reporters for a given simulation stage.
+        Get atom indices for proteins and ligands, excluding hydrogens, water, and ions.
+        
+        Parameters
+        ----------
+        simulation : app.Simulation
+            The OpenMM simulation object.
+            
+        Returns
+        -------
+        list
+            List of atom indices to include in trajectory.
         """
-        params = self.config['simulation_params'][stage_name]
-        paths = self.config['paths']
-        
-        checkpoint_path = paths['checkpoints'][f'{stage_name}_checkpoint_filepath']
-        trajectory_path = paths['trajectories'][f'{stage_name}_trajectory_filepath']
-        state_data_path = paths['state_reporters'][f'{stage_name}_state_reporters_filepath']
-        forces_path = paths['forces'][f'{stage_name}_forces_filepath']
-        hessian_path = paths['hessian'][f'{stage_name}_hessian_filepath']
-        
         # Get atom indices for proteins and ligands, excluding hydrogens, water, and ions
         protein_chains = self.config['protein_info'].get('protein_chain_ids', [])
         ligand_chains = self.config['ligand_info'].get('ligand_names', [])
@@ -912,6 +923,21 @@ class MDSimulation:
                         f"Wrong chains: {excluded_counts['wrong_chains']}")
         log_info(logger, f"Allowed chains: {allowed_chains}")
         log_debug(logger, f"Excluded residue types: {excluded_residues}")
+        
+        return atom_indices
+
+    def _set_reporters(self, simulation: app.Simulation, stage_name: str, total_steps: int, atom_indices: list):
+        """
+        Sets up reporters for a given simulation stage.
+        """
+        params = self.config['simulation_params'][stage_name]
+        paths = self.config['paths']
+        
+        checkpoint_path = paths['checkpoints'][f'{stage_name}_checkpoint_filepath']
+        trajectory_path = paths['trajectories'][f'{stage_name}_trajectory_filepath']
+        state_data_path = paths['state_reporters'][f'{stage_name}_state_reporters_filepath']
+        forces_path = paths['forces'][f'{stage_name}_forces_filepath']
+        hessian_path = paths['hessian'][f'{stage_name}_hessian_filepath']
 
         # Checkpoint Reporter
         simulation.reporters.append(app.CheckpointReporter(
@@ -919,12 +945,13 @@ class MDSimulation:
             reportInterval=params['checkpoint_interval']
         ))
         
-        # Trajectory Reporter (NPZ)
-        simulation.reporters.append(TrajectoryReporter(
+        # Trajectory Reporter (XTC with atom subset)
+        simulation.reporters.append(own_XTCReporter(
             file=trajectory_path,
             reportInterval=params['trajectory_interval'],
-            total_steps=total_steps,
-            atom_indices=atom_indices
+            atomSubset=atom_indices,
+            enforcePeriodicBox=True,
+            append=Path(trajectory_path).exists()
         ))
         
         # Forces Reporter
@@ -956,7 +983,7 @@ class MDSimulation:
         ))
         log_debug(logger, f"Reporters set for stage: {stage_name}")
 
-    def _save_final_topology(self, simulation: app.Simulation, stage_name: str):
+    def _save_final_topology(self, simulation: app.Simulation, stage_name: str, atom_indices: list = None):
         """Saves the final topology of a simulation stage."""
         topology_path = self.config['paths']['topologies'][f'{stage_name}_topology_filepath']
         log_info(logger, f"Saving final topology for stage {stage_name} to {topology_path}")
