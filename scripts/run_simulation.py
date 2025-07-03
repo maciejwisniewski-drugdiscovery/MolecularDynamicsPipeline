@@ -90,7 +90,7 @@ def run_simulation(config: dict, logger: logging.Logger) -> bool:
         sim.set_system()
         
         # Run simulation stages
-        stages = ['warmup', 'backbone_removal', 'nvt', 'npt', 'production']
+        stages = ['warmup', 'backbone_removal', 'nvt', 'npt', 'production', 'energy_calculation']
         
         for stage in stages:
             if sim.config['info']['simulation_status'][stage] == 'Not Done':

@@ -8,7 +8,7 @@ import random
 
 import logging
 from molecular_dynamics_pipeline.utils.logger import setup_logger, log_info, log_error, log_warning, log_debug
-from molecular_dynamics_pipeline.simulation.simulation import MDSimulation
+from molecular_dynamics_pipeline.simulation.simulation_refactored import MDSimulation
 from molecular_dynamics_pipeline.data.misato import load_misato_ids, create_system_config, split_misato_complex_filepath
 
 
@@ -19,37 +19,55 @@ random.seed(42)
 logger = setup_logger(name="plinder_dynamics", log_level=logging.INFO)
 
 
-def run_simulation(config):
+def run_simulation(config, sim_logger):
     # Initialize and run simulation
     sim = MDSimulation(config)
     
     # Preprocessing Step
+    log_info(sim_logger, f"Starting system setup for {config['info']['system_id']}")
     sim.set_system()
     
     # Heat up
     if sim.config['info']['simulation_status']['warmup'] == 'Not Done':
+        log_info(sim_logger, "Starting warmup phase")
         sim.warmup()
         sim.update_simulation_status('warmup', 'Done')
+        log_info(sim_logger, "Completed warmup phase")
         
     # Removal of Backbone Constraints
     if sim.config['info']['simulation_status']['backbone_removal'] == 'Not Done':
+        log_info(sim_logger, "Starting backbone constraints removal")
         sim.remove_backbone_constraints()
         sim.update_simulation_status('backbone_removal', 'Done')
+        log_info(sim_logger, "Completed backbone constraints removal")
 
     # NVT
     if sim.config['info']['simulation_status']['nvt'] == 'Not Done':
+        log_info(sim_logger, "Starting NVT equilibration")
         sim.nvt()
         sim.update_simulation_status('nvt', 'Done')
+        log_info(sim_logger, "Completed NVT equilibration")
 
     # NPT
     if sim.config['info']['simulation_status']['npt'] == 'Not Done':
+        log_info(sim_logger, "Starting NPT equilibration")
         sim.npt()
         sim.update_simulation_status('npt', 'Done')
+        log_info(sim_logger, "Completed NPT equilibration")
 
     # Production
     if sim.config['info']['simulation_status']['production'] == 'Not Done':
+        log_info(sim_logger, "Starting production run")
         sim.production()
         sim.update_simulation_status('production', 'Done')
+        log_info(sim_logger, "Completed production run")
+
+    # Energy Calculation
+    if sim.config['info']['simulation_status']['energy_calculation'] == 'Not Done':
+        log_info(sim_logger, "Starting energy calculation")
+        sim.energy_calculation()
+        sim.update_simulation_status('energy_calculation', 'Done')
+        log_info(sim_logger, "Completed energy calculation")
 
     
 def single_simulation():
@@ -74,11 +92,34 @@ def single_simulation():
             system_config_filepath = create_system_config(template_config = args.config_template, system_id = misato_id, output_dir = args.output_dir)
             with open(system_config_filepath, 'r') as f:
                 config = yaml.safe_load(f)
+            
+            # Create system-specific output directory
+            system_output_dir = os.path.join(args.output_dir, config['info']['system_id'])
+            os.makedirs(system_output_dir, exist_ok=True)
+            
+            # Setup system-specific logger
+            log_dir = os.path.join(system_output_dir, 'logs')
+            sim_logger = setup_logger(
+                name=f"misato_dynamics_{misato_id}",
+                log_level=logging.INFO,
+                log_dir=log_dir,
+                console_output=True
+            )
+            
+            log_info(sim_logger, f"Starting simulation for system {misato_id}")
+            log_info(sim_logger, f"Configuration loaded from {system_config_filepath}")
+                
             if any(not os.path.exists(fp) for fp in config['paths']['raw_protein_files'] + config['paths']['raw_ligand_files']):
                 split_misato_complex_filepath(config, ccd_pkl_filepath = args.ccd_pkl)    
-            run_simulation(config)
+            run_simulation(config, sim_logger)
+            
+            log_info(sim_logger, f"Completed all simulation stages for system {misato_id}")
+            
         except Exception as e:
-            log_error(logger, f"Error: {e}")
+            if 'sim_logger' in locals():
+                log_error(sim_logger, f"Error in simulation {misato_id}: {str(e)}")
+            else:
+                log_error(logger, f"Error setting up simulation {misato_id}: {str(e)}")
             continue
 
 

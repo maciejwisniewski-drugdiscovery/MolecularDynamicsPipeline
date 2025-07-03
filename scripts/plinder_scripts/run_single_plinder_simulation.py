@@ -90,7 +90,12 @@ def run_simulation(config, sim_logger):
         sim.update_simulation_status('production', 'Done')
         log_info(sim_logger, "Completed production run")
 
-    #if sim.config['info'].get('calculate_energy', False) == True:
+    # Energy Calculation
+    if sim.config['info']['simulation_status']['energy_calculation'] == 'Not Done':
+        log_info(sim_logger, "Starting energy calculation")
+        sim.energy_calculation()
+        sim.update_simulation_status('energy_calculation', 'Done')
+        log_info(sim_logger, "Completed energy calculation")
         
 
 def process_single_system(plinder_id, config_template, output_dir):

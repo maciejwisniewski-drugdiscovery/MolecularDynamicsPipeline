@@ -11,7 +11,6 @@ import itertools
 import numpy as np
 import biotite.structure as struc
 import biotite.structure.io as bsio
-import biotite.structure.io.xtc as xtc
 import biotite.structure.io.pdb as pdb
 import biotite.structure.io.pdbx as pdbx
 from biotite.interface import openmm as biotite_openmm
@@ -72,11 +71,12 @@ def create_subset_topology(topology: Topology, atom_indices: List[int]) -> Topol
 def split_molecular_dynamics_into_components(topology_filepath: Path,
     trajectory_filepath: Path,
     output_dir: Path,
-    remove_waters: bool = True,
     renamed_chains: Optional[List[str]] = None):
     """
     Split a molecular dynamics trajectory into components using OpenMM for topology
-    manipulation and Biotite for coordinate handling.
+    manipulation and numpy arrays for coordinate handling.
+    
+    Note: trajectory_filepath should be a .npz file containing coordinates without water/ions.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     single_output_dir = output_dir / 'single'
@@ -89,30 +89,45 @@ def split_molecular_dynamics_into_components(topology_filepath: Path,
     full_openmm_topology = openmm_cif.getTopology()
     full_openmm_positions = openmm_cif.getPositions(asNumpy=True)
 
-    # Load structure and trajectory with Biotite for masking and coordinate access
-    biotite_cif = pdbx.CIFFile.read(topology_filepath)
-    biotite_structure = pdbx.get_structure(biotite_cif, model=1, include_bonds=True)
-    biotite_trajectory = xtc.XTCFile.read(trajectory_filepath)
-    all_coords = biotite_trajectory.get_coord()
 
-    solute_biotite_structure = biotite_structure
-    solute_openmm_topology = full_openmm_topology
-    solute_openmm_positions = full_openmm_positions
+    # Load trajectory from .npz file
+    trajectory_data = np.load(trajectory_filepath)
+    if 'positions' in trajectory_data:
+        all_coords = trajectory_data['positions']
+    elif 'coordinates' in trajectory_data:
+        all_coords = trajectory_data['coordinates']
+    elif 'coords' in trajectory_data:
+        all_coords = trajectory_data['coords']
+    else:
+        # Try to find the coordinate array (assume it's the largest array)
+        coord_key = max(trajectory_data.keys(), key=lambda k: trajectory_data[k].size)
+        all_coords = trajectory_data[coord_key]
+        print(f"Warning: Using array '{coord_key}' as coordinates from .npz file")
+
+    # Get atom indices from trajectory file if available
+    
+    trajectory_atom_indices = trajectory_data['atom_indices']
+    print(f"Found {len(trajectory_atom_indices)} atom indices in trajectory file")
+
+    # Create filtered topology and positions that match the trajectory
+    solute_openmm_topology = create_subset_topology(full_openmm_topology, trajectory_atom_indices.tolist())
+    solute_openmm_positions = full_openmm_positions[trajectory_atom_indices]
+        
+    # Load structure with Biotite for chain information - filter to match trajectory atoms
+    biotite_cif = pdbx.CIFFile.read(topology_filepath)
+    full_biotite_structure = pdbx.get_structure(biotite_cif, model=1, include_bonds=True)
+    solute_biotite_structure = full_biotite_structure[trajectory_atom_indices]
+    solute_openmm_topology = biotite_openmm.to_topology(solute_biotite_structure)
+
     solute_coords = all_coords
 
-    if remove_waters:
-        water_mask = (biotite_structure.res_name == 'HOH')
-        ion_mask = np.isin(biotite_structure.res_name, ['NA', 'CL', 'K']) # Common ions
-        solvent_mask = water_mask | ion_mask
-        solute_mask = ~solvent_mask
-        
-        solute_indices = np.where(solute_mask)[0].tolist()
-        
-        # Filter all data structures to only include solute atoms
-        solute_biotite_structure = biotite_structure[solute_mask]
-        solute_coords = all_coords[:, solute_mask, :]
-        solute_openmm_positions = full_openmm_positions[solute_mask, :]
-        solute_openmm_topology = create_subset_topology(full_openmm_topology, solute_indices)
+    # Verify coordinate dimensions match topology
+    n_atoms_topology = solute_biotite_structure.array_length()
+    n_atoms_trajectory = solute_coords.shape[1]
+    
+    if n_atoms_topology != n_atoms_trajectory:
+        raise ValueError(f"Dimension mismatch: Topology has {n_atoms_topology} atoms but trajectory has {n_atoms_trajectory} atoms. "
+                        f"This indicates the trajectory and topology files are incompatible.")
 
     chain_ids = np.unique(solute_biotite_structure.chain_id)
 
@@ -122,7 +137,7 @@ def split_molecular_dynamics_into_components(topology_filepath: Path,
     # Generate Single Component Topologies and Trajectories
     for chain_id in chain_ids:
         component_topology_filename = single_output_dir / f'{chain_id}.cif'
-        component_trajectory_filename = single_output_dir / f'{chain_id}.xtc'
+        component_trajectory_filename = single_output_dir / f'{chain_id}.npz'
 
         chain_mask = (solute_biotite_structure.chain_id == chain_id)
         component_indices = np.where(chain_mask)[0].tolist()
@@ -134,16 +149,15 @@ def split_molecular_dynamics_into_components(topology_filepath: Path,
         with open(str(component_topology_filename), 'w') as f:
             PDBxFile.writeFile(component_topology, component_positions, f, keepIds=True)
 
-        component_xtc = xtc.XTCFile()
-        component_xtc.set_coord(component_coords)
-        component_xtc.write(str(component_trajectory_filename))
+        # Save trajectory as .npz file
+        np.savez_compressed(component_trajectory_filename, coordinates=component_coords)
 
         all_tqdm_bar.update(1)
 
     # Generate Paired Component Topologies and Trajectories
     for chain_id_a, chain_id_b in itertools.combinations(chain_ids, 2):
         component_topology_filename = pair_output_dir / f'{chain_id_a}_{chain_id_b}.cif'
-        component_trajectory_filename = pair_output_dir / f'{chain_id_a}_{chain_id_b}.xtc'
+        component_trajectory_filename = pair_output_dir / f'{chain_id_a}_{chain_id_b}.npz'
         
         chain_a_mask = (solute_biotite_structure.chain_id == chain_id_a)
         chain_b_mask = (solute_biotite_structure.chain_id == chain_id_b)
@@ -157,9 +171,8 @@ def split_molecular_dynamics_into_components(topology_filepath: Path,
         with open(str(component_topology_filename), 'w') as f:
             PDBxFile.writeFile(component_topology, component_positions, f, keepIds=True)
 
-        component_xtc = xtc.XTCFile()
-        component_xtc.set_coord(component_coords)
-        component_xtc.write(str(component_trajectory_filename))
+        # Save trajectory as .npz file
+        np.savez_compressed(component_trajectory_filename, coordinates=component_coords)
 
         all_tqdm_bar.update(1)
 
@@ -174,14 +187,31 @@ def calculate_component_energy(component_topology_filepath: Path,
     """
     component_name = component_topology_filepath.stem
     
+    # Load topology reference coordinates
     component_topology_file = pdbx.CIFFile.read(component_topology_filepath)
     component_topology_coords = pdbx.get_structure(component_topology_file, model=1, include_bonds=True).coord
 
+    # Load OpenMM topology
     component_topology = PDBxFile(str(component_topology_filepath)).topology
-    coords = xtc.XTCFile.read(component_trajectory_filepath).get_coord()
+    
+    # Load trajectory from .npz file
+    trajectory_data = np.load(component_trajectory_filepath)
+    if 'positions' in trajectory_data:
+        coords = trajectory_data['positions']
+    elif 'coordinates' in trajectory_data:
+        coords = trajectory_data['coordinates']
+    elif 'coords' in trajectory_data:
+        coords = trajectory_data['coords']
+    else:
+        # Try to find the coordinate array (assume it's the largest array)
+        coord_key = max(trajectory_data.keys(), key=lambda k: trajectory_data[k].size)
+        coords = trajectory_data[coord_key]
+        print(f"Warning: Using array '{coord_key}' as coordinates from .npz file")
 
+    # Combine topology coordinates with trajectory coordinates
     all_coords = np.concatenate([component_topology_coords[None, ...], coords], axis=0)
 
+    # Setup forcefield
     forcefield = ForceField(
         "amber/protein.ff14SB.xml",
         "amber/tip3p_standard.xml",
@@ -190,9 +220,9 @@ def calculate_component_energy(component_topology_filepath: Path,
     for forcefield_file in forcefield_dirpath.glob('*.xml'):
         forcefield.loadFile(str(forcefield_file))
     
-    # For vacuum calculations, NoCutoff is appropriate. #self.system = XmlSerializer.deserialize(f.read())
+    # For vacuum calculations, NoCutoff is appropriate
     system = forcefield.createSystem(component_topology, nonbondedMethod=NoCutoff)
-    # Integrator settings don't matter much as we are not running dynamics.
+    # Integrator settings don't matter much as we are not running dynamics
     integrator = LangevinIntegrator(300*kelvin, 1/picosecond, 0.002*picoseconds)
     platform = Platform.getPlatformByName('CUDA')
     simulation = Simulation(component_topology, system, integrator, platform)
@@ -206,24 +236,25 @@ def calculate_component_energy(component_topology_filepath: Path,
 
     return energies
 
+
 def calculate_interaction_energies(
     topology_filepath: Path,
     trajectory_filepath: Path,
     forcefield_dirpath: Path,
-    output_dir: Path,
-    remove_waters: bool = True
+    output_dir: Path
 ):
     """
     Orchestrates splitting a trajectory, calculating energies for all components,
     and computing an MMPBSA-like interaction matrix.
+    
+    Note: trajectory_filepath should be a .npz file containing coordinates without water/ions.
     """
     # 1. Split trajectory into components
     split_dir = output_dir / 'components'
     split_molecular_dynamics_into_components(
         topology_filepath=topology_filepath,
         trajectory_filepath=trajectory_filepath,
-        output_dir=split_dir,
-        remove_waters=remove_waters
+        output_dir=split_dir
     )
 
     # 2. Calculate energies for all components
@@ -240,8 +271,13 @@ def calculate_interaction_energies(
     print("Calculating energies for all components...")
     for top_file in tqdm(all_topologies, desc="Overall Progress"):
         component_name = top_file.stem
-        traj_file = top_file.with_suffix('.xtc')
+        traj_file = top_file.with_suffix('.npz')
         
+        # Check if trajectory file exists
+        if not traj_file.exists():
+            print(f"Warning: Trajectory file not found: {traj_file}")
+            continue
+            
         energies = calculate_component_energy(
             component_topology_filepath=top_file,
             component_trajectory_filepath=traj_file,
@@ -320,12 +356,12 @@ def calculate_interaction_energies(
 
 
 if __name__ == '__main__':
-    plinder_id = '2c27__1__1.A__1.C'
+    plinder_id = '1grx__1__1.A__1.B'
     output_dir = Path(f'/mnt/raid/mwisniewski/Data/plinder_md/plinder_bound/{plinder_id}_simulation_bound_state')
 
     calculate_interaction_energies(
         topology_filepath=output_dir / f'{plinder_id}_init_topology.cif',
-        trajectory_filepath=output_dir / f'trajectories/{plinder_id}_warmup_trajectory.xtc',
+        trajectory_filepath=output_dir / f'trajectories/{plinder_id}_warmup_trajectory.npz',
         forcefield_dirpath = output_dir / f'forcefields',
         output_dir=output_dir / 'energies'
     )
