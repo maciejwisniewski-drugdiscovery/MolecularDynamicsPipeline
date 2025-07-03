@@ -28,7 +28,6 @@ from molecular_dynamics_pipeline.utils.errors import NoneLigandError, NoneConfor
 from molecular_dynamics_pipeline.utils.logger import setup_logger, log_info, log_error, log_warning, log_debug
 from molecular_dynamics_pipeline.utils.preprocessing import download_nonstandard_residue
 from molecular_dynamics_pipeline.data.small_molecule import load_molecule_to_openmm
-from molecular_dynamics_pipeline.data.biomolecules import fix_biomolecule_with_pdb2pqr
 from molecular_dynamics_pipeline.simulation.reporters import ForceReporter, HessianReporter, TrajectoryReporter
 
 logger = setup_logger(name="plinder_dynamics", log_level=logging.INFO)
@@ -364,7 +363,7 @@ class MDSimulation:
             log_info(logger, "Adding solvent to the system.")
             complex_model.addSolvent(
                 system_generator.forcefield,
-                model=self.config['forcefield']['water_model'],
+                model=self.config['forcefield']['water_model'],boxShape='octahedron',
                 padding=self.config['preprocessing']['box_padding'] * unit.nanometers,
                 ionicStrength=self.config['preprocessing']['ionic_strength'] * unit.molar,
             )

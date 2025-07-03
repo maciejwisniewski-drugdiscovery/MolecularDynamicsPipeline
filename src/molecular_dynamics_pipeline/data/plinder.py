@@ -15,7 +15,6 @@ from pathlib import Path
 from plinder.core.scores import query_index
 import yaml
 from molecular_dynamics_pipeline.data.small_molecule import fix_molecule_with_pybel, create_unbound_ligand_files
-from molecular_dynamics_pipeline.data.biomolecules import fix_biomolecule_with_pdb2pqr
 
 class PlinderFilters:
     """Class for handling Plinder filtering configurations.
@@ -71,7 +70,6 @@ def load_plinder_ids(filters: Optional[str] = None):
         filters=plinder_filters.filters
     )
     plinder_ids = set(PLINDEX['system_id'].tolist())
-    plinder_ids = set(['2c27__1__1.A__1.C'])
     return plinder_ids
 
 

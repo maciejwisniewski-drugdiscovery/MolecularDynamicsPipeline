@@ -3,7 +3,7 @@ from rdkit import Chem
 from rdkit.Chem import Mol
 from openbabel import pybel
 from rdkit.Chem import Draw
-from dynamics_pipeline.data.small_molecule import fix_autodock_output_ligand
+from molecular_dynamics_pipeline.data.small_molecule import fix_autodock_output_ligand
 
 if __name__ == "__main__":
     REFERENCE_SDF_FILEPATH = "/mnt/raid/mwisniewski/Projects/plinder_dynamics/ligand_113.sdf"

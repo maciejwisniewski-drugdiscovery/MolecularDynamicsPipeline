@@ -16,8 +16,8 @@ import argparse
 import logging
 from pathlib import Path
 
-from dynamics_pipeline.utils.logger import setup_logger, log_info, log_error, log_warning, log_debug
-from dynamics_pipeline.simulation.simulation_refactored import MDSimulation
+from molecular_dynamics_pipeline.utils.logger import setup_logger, log_info, log_error, log_warning, log_debug
+from molecular_dynamics_pipeline.simulation.simulation_refactored import MDSimulation
 
 
 def validate_config(config_path: str) -> dict:

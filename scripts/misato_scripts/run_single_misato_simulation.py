@@ -7,9 +7,9 @@ from typing import Optional
 import random
 
 import logging
-from dynamics_pipeline.utils.logger import setup_logger, log_info, log_error, log_warning, log_debug
-from dynamics_pipeline.simulation.simulation import MDSimulation
-from dynamics_pipeline.data.misato import load_misato_ids, create_system_config, split_misato_complex_filepath
+from molecular_dynamics_pipeline.utils.logger import setup_logger, log_info, log_error, log_warning, log_debug
+from molecular_dynamics_pipeline.simulation.simulation import MDSimulation
+from molecular_dynamics_pipeline.data.misato import load_misato_ids, create_system_config, split_misato_complex_filepath
 
 
 random.seed(42)

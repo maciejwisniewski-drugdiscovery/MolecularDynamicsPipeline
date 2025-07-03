@@ -1,7 +1,7 @@
 import os
 import yaml
 import argparse
-from dynamics_pipeline.data.misato import load_misato_ids, generate_misato_unbound_data
+from molecular_dynamics_pipeline.data.misato import load_misato_ids, generate_misato_unbound_data
 import logging
 from multiprocessing import Pool, cpu_count
 
