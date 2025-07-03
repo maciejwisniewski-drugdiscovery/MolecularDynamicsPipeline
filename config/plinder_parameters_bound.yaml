@@ -76,6 +76,8 @@ simulation_params:
     checkpoint_interval: 1_000
     trajectory_interval: 1_000
     state_data_reporter_interval: 1_000
+  energy_calculation:
+    run: true
 
 # File paths and formats
 paths:
