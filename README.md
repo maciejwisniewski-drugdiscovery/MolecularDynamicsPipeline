@@ -192,21 +192,7 @@ python scripts/run_simulation.py \
   --output-dir /path/to/output
 ```
 
-**Resume from checkpoint**:
-```bash
-python scripts/run_simulation.py \
-  --config config/my_simulation.yaml \
-  --resume
-```
-
 ### Advanced Options
-
-**Run specific stages only**:
-```bash
-python scripts/run_simulation.py \
-  --config config/my_simulation.yaml \
-  --stages warmup,nvt,production
-```
 
 **Validation mode** (check config without running):
 ```bash
@@ -315,4 +301,3 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 For questions and support:
 - **Issues**: GitHub Issues
 - **Email**: m.wisniewski@datascience.edu.pl
-- **Documentation**: See `docs/` directory for detailed API documentation
