@@ -985,7 +985,7 @@ class MDSimulation:
             file=trajectory_path,
             reportInterval=params['trajectory_interval'],
             atomSubset=atom_indices,
-            enforcePeriodicBox=True,
+            enforcePeriodicBox=False,
             append=Path(trajectory_path).exists()
         ))
         
@@ -1022,7 +1022,7 @@ class MDSimulation:
         """Saves the final topology of a simulation stage."""
         topology_path = self.config['paths']['topologies'][f'{stage_name}_topology_filepath']
         log_info(logger, f"Saving final topology for stage {stage_name} to {topology_path}")
-        positions = simulation.context.getState(getPositions=True, enforcePeriodicBox=True).getPositions()
+        positions = simulation.context.getState(getPositions=True, enforcePeriodicBox=False).getPositions()
         
         topology = simulation.topology
         biotite_topology = biotite_openmm.from_topology(topology)
