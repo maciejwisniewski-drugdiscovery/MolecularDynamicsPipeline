@@ -242,13 +242,25 @@ def calculate_interaction_energies(
     topology_filepath: Path,
     trajectory_filepath: Path,
     forcefield_dirpath: Path,
-    output_dir: Path
+    output_dir: Path,
+    stage: str = "production"
 ):
     """
     Orchestrates splitting a trajectory, calculating energies for all components,
     and computing an MMPBSA-like interaction matrix.
     
-    Note: trajectory_filepath should be an .xtc file containing coordinates for proteins and ligands.
+    Parameters
+    ----------
+    topology_filepath : Path
+        Path to the topology file.
+    trajectory_filepath : Path
+        Path to the trajectory file (XTC format).
+    forcefield_dirpath : Path
+        Path to the forcefield directory.
+    output_dir : Path
+        Path to the output directory.
+    stage : str
+        The simulation stage name (e.g., 'nvt', 'npt', 'production').
     """
     # 1. Split trajectory into components
     split_dir = output_dir / 'components'
@@ -286,7 +298,7 @@ def calculate_interaction_energies(
         )
         all_energies[component_name] = energies
 
-    # 3. Create JSON output
+    # 3. Create JSON output with stage-specific name
     json_output_list = []
     for name, energy_list in all_energies.items():
         components = name.split('_')
@@ -295,7 +307,7 @@ def calculate_interaction_energies(
             'energies': energy_list
         })
     
-    json_filepath = output_dir / 'component_energies.json'
+    json_filepath = output_dir / f'{stage}_component_energies.json'
     print(f"Saving component energies to {json_filepath}")
     with open(json_filepath, 'w') as f:
         json.dump(json_output_list, f, indent=2)
@@ -344,8 +356,8 @@ def calculate_interaction_energies(
         interaction_matrix_3d[r_idx, c_idx, :] = interaction_energy_ts
         interaction_matrix_3d[c_idx, r_idx, :] = interaction_energy_ts
 
-    # Save the 3D matrix and component labels to a single .npz file
-    matrix_filepath = output_dir / 'interaction_energy_matrix.npz'
+    # Save the 3D matrix and component labels to a single .npz file with stage-specific name
+    matrix_filepath = output_dir / f'{stage}_interaction_energy_matrix.npz'
     print(f"Saving {N}x{N}x{F} interaction energy matrix to {matrix_filepath}")
     np.savez(
         matrix_filepath,
@@ -353,7 +365,29 @@ def calculate_interaction_energies(
         components=np.array(single_component_names)
     )
 
+    # 5. Cleanup temporary component files
+    print("Cleaning up temporary component files...")
+    cleanup_temporary_files(split_dir)
+
     print("Energy calculation finished.")
+
+
+def cleanup_temporary_files(components_dir: Path):
+    """
+    Clean up temporary component files created during energy calculation.
+    
+    Parameters
+    ----------
+    components_dir : Path
+        Path to the components directory containing temporary files.
+    """
+    try:
+        import shutil
+        if components_dir.exists():
+            shutil.rmtree(components_dir)
+            print(f"Removed temporary component directory: {components_dir}")
+    except Exception as e:
+        print(f"Warning: Could not remove temporary files: {e}")
 
 
 if __name__ == '__main__':

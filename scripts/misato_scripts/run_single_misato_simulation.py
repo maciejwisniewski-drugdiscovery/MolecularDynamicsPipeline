@@ -62,12 +62,20 @@ def run_simulation(config, sim_logger):
         sim.update_simulation_status('production', 'Done')
         log_info(sim_logger, "Completed production run")
 
-    # Energy Calculation
-    if sim.config['info']['simulation_status']['energy_calculation'] == 'Not Done':
-        log_info(sim_logger, "Starting energy calculation")
-        sim.energy_calculation()
-        sim.update_simulation_status('energy_calculation', 'Done')
-        log_info(sim_logger, "Completed energy calculation")
+    # Energy Calculations
+    energy_stages = ['nvt_energy_calculation', 'npt_energy_calculation', 'production_energy_calculation']
+    for energy_stage in energy_stages:
+        base_stage = energy_stage.replace('_energy_calculation', '')
+        if sim.config['info']['simulation_status'][energy_stage] == 'Not Done':
+            # Only run energy calculation if the corresponding base stage is done
+            if sim.config['info']['simulation_status'][base_stage] == 'Done':
+                log_info(sim_logger, f"Starting {energy_stage}")
+                energy_method = getattr(sim, energy_stage)
+                energy_method()
+                sim.update_simulation_status(energy_stage, 'Done')
+                log_info(sim_logger, f"Completed {energy_stage}")
+            else:
+                log_info(sim_logger, f"Skipping {energy_stage} as {base_stage} is not completed")
 
     
 def single_simulation():

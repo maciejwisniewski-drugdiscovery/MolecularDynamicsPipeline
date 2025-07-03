@@ -90,7 +90,8 @@ def run_simulation(config: dict, logger: logging.Logger) -> bool:
         sim.set_system()
         
         # Run simulation stages
-        stages = ['warmup', 'backbone_removal', 'nvt', 'npt', 'production', 'energy_calculation']
+        stages = ['warmup', 'backbone_removal', 'nvt', 'npt', 'production']
+        energy_stages = ['nvt_energy_calculation', 'npt_energy_calculation', 'production_energy_calculation']
         
         for stage in stages:
             if sim.config['info']['simulation_status'][stage] == 'Not Done':
@@ -105,6 +106,26 @@ def run_simulation(config: dict, logger: logging.Logger) -> bool:
                 log_info(logger, f"Completed {stage} stage successfully")
             else:
                 log_info(logger, f"Skipping {stage} stage (already completed)")
+        
+        # Run energy calculation stages
+        for energy_stage in energy_stages:
+            base_stage = energy_stage.replace('_energy_calculation', '')
+            if sim.config['info']['simulation_status'][energy_stage] == 'Not Done':
+                # Only run energy calculation if the corresponding base stage is done
+                if sim.config['info']['simulation_status'][base_stage] == 'Done':
+                    log_info(logger, f"Running {energy_stage} stage...")
+                    
+                    # Get the energy calculation method from the simulation object
+                    energy_method = getattr(sim, energy_stage)
+                    energy_method()
+                    
+                    # Update status
+                    sim.update_simulation_status(energy_stage, 'Done')
+                    log_info(logger, f"Completed {energy_stage} stage successfully")
+                else:
+                    log_info(logger, f"Skipping {energy_stage} stage (base stage {base_stage} not completed)")
+            else:
+                log_info(logger, f"Skipping {energy_stage} stage (already completed)")
         
         log_info(logger, "Simulation pipeline completed successfully")
         return True

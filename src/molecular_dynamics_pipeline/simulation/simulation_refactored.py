@@ -242,14 +242,17 @@ class MDSimulation:
             for stage in ['warmup', 'backbone_removal', 'nvt', 'npt', 'production']
         }
         
-        # Add energy calculation stage - check if energy output directory exists and has expected files
+        # Add energy calculation stages - check if energy output directory exists and has expected files
         energy_output_dir = Path(self.config['paths']['output_dir']) / 'energies'
-        energy_matrix_file = energy_output_dir / 'interaction_energy_matrix.npz'
-        energy_json_file = energy_output_dir / 'component_energies.json'
         
-        self.config['info']['simulation_status']['energy_calculation'] = (
-            'Done' if energy_matrix_file.exists() and energy_json_file.exists() else 'Not Done'
-        )
+        # Check for each stage's energy calculation
+        for energy_stage in ['nvt', 'npt', 'production']:
+            energy_matrix_file = energy_output_dir / f'{energy_stage}_interaction_energy_matrix.npz'
+            energy_json_file = energy_output_dir / f'{energy_stage}_component_energies.json'
+            
+            self.config['info']['simulation_status'][f'{energy_stage}_energy_calculation'] = (
+                'Done' if energy_matrix_file.exists() and energy_json_file.exists() else 'Not Done'
+            )
 
     def _setup_platform(self):
         """Configures the OpenMM platform for the simulation."""
@@ -593,29 +596,37 @@ class MDSimulation:
         if self.system is None:
             self.set_system()
             
-        pipeline_stages = ['warmup', 'backbone_removal', 'nvt', 'npt', 'production', 'energy_calculation']
+        pipeline_stages = ['warmup', 'backbone_removal', 'nvt', 'npt', 'production']
+        energy_stages = ['nvt_energy_calculation', 'npt_energy_calculation', 'production_energy_calculation']
+        
+        # Run main simulation stages
         for stage in pipeline_stages:
-            # Special handling for energy_calculation stage
-            if stage == 'energy_calculation':
-                if self.config['simulation_params'].get('energy_calculation', {}).get('run', False):
-                    if self.config['info']['simulation_status'][stage] == 'Not Done':
-                        log_info(logger, f"Running {stage} stage.")
-                        stage_method = getattr(self, stage)
-                        stage_method()
-                    else:
-                        log_info(logger, f"Skipping {stage} stage as it is already marked as 'Done'.")
+            if self.config['simulation_params'][stage].get('run', False):
+                if self.config['info']['simulation_status'][stage] == 'Not Done':
+                    log_info(logger, f"Running {stage} stage.")
+                    stage_method = getattr(self, stage)
+                    stage_method()
                 else:
-                    log_info(logger, f"Skipping {stage} stage as it is not configured to run.")
+                    log_info(logger, f"Skipping {stage} stage as it is already marked as 'Done'.")
             else:
-                if self.config['simulation_params'][stage].get('run', False):
-                    if self.config['info']['simulation_status'][stage] == 'Not Done':
-                        log_info(logger, f"Running {stage} stage.")
-                        stage_method = getattr(self, stage)
+                log_info(logger, f"Skipping {stage} stage as it is not configured to run.")
+        
+        # Run energy calculation stages
+        for energy_stage in energy_stages:
+            base_stage = energy_stage.replace('_energy_calculation', '')
+            if self.config['simulation_params'].get('energy_calculation', {}).get('run', False):
+                if self.config['info']['simulation_status'][energy_stage] == 'Not Done':
+                    # Only run energy calculation if the corresponding base stage is done
+                    if self.config['info']['simulation_status'][base_stage] == 'Done':
+                        log_info(logger, f"Running {energy_stage} stage.")
+                        stage_method = getattr(self, energy_stage)
                         stage_method()
                     else:
-                        log_info(logger, f"Skipping {stage} stage as it is already marked as 'Done'.")
+                        log_info(logger, f"Skipping {energy_stage} stage as {base_stage} is not completed.")
                 else:
-                    log_info(logger, f"Skipping {stage} stage as it is not configured to run.")
+                    log_info(logger, f"Skipping {energy_stage} stage as it is already marked as 'Done'.")
+            else:
+                log_info(logger, f"Skipping {energy_stage} stage as energy calculation is not configured to run.")
         log_info(logger, "Simulation pipeline finished.")
 
     def _run_simulation_stage(self, stage_name: str, use_posres: bool = False, use_barostat: bool = False):
@@ -820,26 +831,49 @@ class MDSimulation:
     def production(self):
         self._run_simulation_stage('production', use_barostat=True)
     
-    def energy_calculation(self):
+    def nvt_energy_calculation(self):
         """
-        Calculate interaction energies using the NPT topology and production trajectory.
+        Calculate interaction energies using the NVT topology and trajectory.
         """
-        log_info(logger, "--- Starting ENERGY CALCULATION Stage ---")
+        self._calculate_stage_energies('nvt')
+    
+    def npt_energy_calculation(self):
+        """
+        Calculate interaction energies using the NPT topology and trajectory.
+        """
+        self._calculate_stage_energies('npt')
+    
+    def production_energy_calculation(self):
+        """
+        Calculate interaction energies using the production topology and trajectory.
+        """
+        self._calculate_stage_energies('production')
+    
+    def _calculate_stage_energies(self, stage: str):
+        """
+        Calculate interaction energies for a specific simulation stage.
+        
+        Parameters
+        ----------
+        stage : str
+            The simulation stage ('nvt', 'npt', or 'production').
+        """
+        log_info(logger, f"--- Starting {stage.upper()} ENERGY CALCULATION Stage ---")
         
         # Get paths
-        npt_topology_path = Path(self.config['paths']['topologies']['npt_topology_filepath'])
-        production_trajectory_path = Path(self.config['paths']['trajectories']['production_trajectory_filepath'])
+        topology_path = Path(self.config['paths']['topologies'][f'{stage}_topology_filepath'])
+        trajectory_path = Path(self.config['paths']['trajectories'][f'{stage}_trajectory_filepath'])
         forcefield_dirpath = Path(self.config['paths']['molecule_forcefield_dirpath'])
         energy_output_dir = Path(self.config['paths']['output_dir']) / 'energies'
         
         # Check if required files exist
-        if not npt_topology_path.exists():
-            error_msg = f"NPT topology file not found: {npt_topology_path}"
+        if not topology_path.exists():
+            error_msg = f"{stage.upper()} topology file not found: {topology_path}"
             log_error(logger, error_msg)
             raise FileNotFoundError(error_msg)
         
-        if not production_trajectory_path.exists():
-            error_msg = f"Production trajectory file not found: {production_trajectory_path}"
+        if not trajectory_path.exists():
+            error_msg = f"{stage.upper()} trajectory file not found: {trajectory_path}"
             log_error(logger, error_msg)
             raise FileNotFoundError(error_msg)
         
@@ -852,28 +886,29 @@ class MDSimulation:
         energy_output_dir.mkdir(parents=True, exist_ok=True)
         
         try:
-            log_info(logger, f"Using NPT topology: {npt_topology_path}")
-            log_info(logger, f"Using production trajectory: {production_trajectory_path}")
+            log_info(logger, f"Using {stage.upper()} topology: {topology_path}")
+            log_info(logger, f"Using {stage.upper()} trajectory: {trajectory_path}")
             log_info(logger, f"Using forcefield directory: {forcefield_dirpath}")
             log_info(logger, f"Energy output directory: {energy_output_dir}")
             
             # Calculate interaction energies
             calculate_interaction_energies(
-                topology_filepath=npt_topology_path,
-                trajectory_filepath=production_trajectory_path,
+                topology_filepath=topology_path,
+                trajectory_filepath=trajectory_path,
                 forcefield_dirpath=forcefield_dirpath,
-                output_dir=energy_output_dir
+                output_dir=energy_output_dir,
+                stage=stage
             )
             
-            log_info(logger, "Energy calculation completed successfully")
-            self.update_simulation_status('energy_calculation', 'Done')
+            log_info(logger, f"{stage.upper()} energy calculation completed successfully")
+            self.update_simulation_status(f'{stage}_energy_calculation', 'Done')
             
         except Exception as e:
-            error_msg = f"Error during energy calculation: {str(e)}"
+            error_msg = f"Error during {stage.upper()} energy calculation: {str(e)}"
             log_error(logger, error_msg)
             raise RuntimeError(error_msg)
         
-        log_info(logger, "--- ENERGY CALCULATION Stage Finished ---")
+        log_info(logger, f"--- {stage.upper()} ENERGY CALCULATION Stage Finished ---")
 
     # ==================================================================================================
     # HELPER METHODS

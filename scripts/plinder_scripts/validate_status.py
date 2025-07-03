@@ -79,7 +79,8 @@ def check_simulation_status(plinder_id: str, output_dir: str, config_template: s
             return "Error"
         
         system_id = config['info']['system_id']
-        stages = ['warmup', 'backbone_removal', 'nvt', 'npt', 'production', 'energy_calculation']
+        stages = ['warmup', 'backbone_removal', 'nvt', 'npt', 'production']
+        energy_stages = ['nvt_energy_calculation', 'npt_energy_calculation', 'production_energy_calculation']
         
         # Check which stages are configured to run
         configured_stages = []
@@ -87,10 +88,14 @@ def check_simulation_status(plinder_id: str, output_dir: str, config_template: s
             for stage in stages:
                 if stage in config['simulation_params'] and config['simulation_params'][stage].get('run', False):
                     configured_stages.append(stage)
+            
+            # Check energy calculation stages
+            if config['simulation_params'].get('energy_calculation', {}).get('run', False):
+                configured_stages.extend(energy_stages)
         
         # If no stages are configured to run, check all stages
         if not configured_stages:
-            configured_stages = stages
+            configured_stages = stages + energy_stages
         
         # Build expected topology paths manually (like _setup_paths does)
         # Pattern: {output_dir}/{simulation_id}/topologies/{system_id}_{stage}_topology.cif
@@ -98,12 +103,15 @@ def check_simulation_status(plinder_id: str, output_dir: str, config_template: s
         
         completed_stages = []
         for stage in configured_stages:
-            # Special handling for energy_calculation stage
-            if stage == 'energy_calculation':
+            # Special handling for energy calculation stages
+            if stage in energy_stages:
+                # Extract base stage name (e.g., 'nvt' from 'nvt_energy_calculation')
+                base_stage = stage.replace('_energy_calculation', '')
+                
                 # Check for energy output files instead of topology file
                 energy_output_dir = sim_dir / 'energies'
-                energy_matrix_file = energy_output_dir / 'interaction_energy_matrix.npz'
-                energy_json_file = energy_output_dir / 'component_energies.json'
+                energy_matrix_file = energy_output_dir / f'{base_stage}_interaction_energy_matrix.npz'
+                energy_json_file = energy_output_dir / f'{base_stage}_component_energies.json'
                 
                 if energy_matrix_file.exists() and energy_json_file.exists():
                     completed_stages.append(stage)
