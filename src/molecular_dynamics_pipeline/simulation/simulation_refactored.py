@@ -15,6 +15,7 @@ import pickle
 
 from openmm import openmm
 from openmm import app, unit
+from openmm import NonbondedForce
 from openmm import Platform, XmlSerializer, LangevinIntegrator, CustomExternalForce, MonteCarloBarostat
 from openmm.app.modeller import Modeller
 from openmm.app import ForceField
@@ -156,6 +157,9 @@ class MDSimulation:
         self.config['paths']['init_system_filepath'] = str(output_dir / f"{system_id}_init_system.xml")
         self.config['paths']['init_system_with_posres_filepath'] = str(output_dir / f"{system_id}_init_system_with_posres.xml")
         self.config['paths']['molecule_forcefield_dirpath'] = str(output_dir / f"forcefields")
+        self.config['paths']['charges_filepath'] = str(output_dir / f"charges.npz")
+        self.config['paths']['sigmas_filepath'] = str(output_dir / f"sigmas.npz")
+        self.config['paths']['epsilons_filepath'] = str(output_dir / f"epsilons.npz")
         os.makedirs(self.config['paths']['molecule_forcefield_dirpath'], exist_ok=True)
 
         # Per-stage file paths
@@ -321,6 +325,51 @@ class MDSimulation:
         else:
             log_info(logger, "Processing inputs to generate new system and topology files.")
             self._create_system_from_scratch()
+
+    def _save_charges(self):
+        """Save charges to a file"""
+        if os.path.exists(self.config['paths']['charges_filepath']):
+            log_info(logger, "Charges already exist, skipping save.")
+            return
+        
+        atom_indices = self._get_atom_indices_for_trajectory(topology = self.model.topology)
+        nonbonded = [f for f in self.system.getForces() if isinstance(f, NonbondedForce)][0]
+        charges = []
+        for i in atom_indices:
+            charge, _, _ = nonbonded.getParticleParameters(i)
+            charges.append(charge._value)
+        charges = np.array(charges, dtype=np.float64)
+        np.savez_compressed(self.config['paths']['charges_filepath'], charges=charges) 
+
+    def _save_sigmas(self):
+        """Save sigmas to a file"""
+        if os.path.exists(self.config['paths']['sigmas_filepath']):
+            log_info(logger, "Sigmas already exist, skipping save.")
+            return
+        
+        atom_indices = self._get_atom_indices_for_trajectory(topology = self.model.topology)
+        nonbonded = [f for f in self.system.getForces() if isinstance(f, NonbondedForce)][0]
+        sigmas = []
+        for i in atom_indices:
+            _, sigma, _ = nonbonded.getParticleParameters(i)
+            sigmas.append(sigma._value)
+        sigmas = np.asarray(sigmas, dtype=np.float64)
+        np.savez_compressed(self.config['paths']['sigmas_filepath'], sigmas=sigmas) 
+
+    def _save_epsilons(self):
+        """Save epsilons to a file"""
+        if os.path.exists(self.config['paths']['epsilons_filepath']):
+            log_info(logger, "Epsilons already exist, skipping save.")
+            return
+        
+        atom_indices = self._get_atom_indices_for_trajectory(topology = self.model.topology)
+        nonbonded = [f for f in self.system.getForces() if isinstance(f, NonbondedForce)][0]
+        epsilons = []
+        for i in atom_indices:
+            _, _, epsilon = nonbonded.getParticleParameters(i)
+            epsilons.append(epsilon._value)
+        epsilons = np.asarray(epsilons, dtype=np.float64)
+        np.savez_compressed(self.config['paths']['epsilons_filepath'], epsilons=epsilons) 
 
     def _load_system_from_files(self, topology_path, system_path, posres_path):
         """Loads the system, topology, and position restraints from files."""
@@ -807,7 +856,7 @@ class MDSimulation:
         force_decrement = initial_force / n_loops
 
         # Setup reporters with atom indices
-        atom_indices = self._get_atom_indices_for_trajectory(simulation)
+        atom_indices = self._get_atom_indices_for_trajectory(simulation=simulation)
         self._set_reporters(simulation, 'backbone_removal', params['nsteps'], atom_indices)
 
         for i in tqdm(range(n_loops), desc="Removing Constraints"):
@@ -914,7 +963,7 @@ class MDSimulation:
     # HELPER METHODS
     # ==================================================================================================
 
-    def _get_atom_indices_for_trajectory(self, simulation: app.Simulation) -> list:
+    def _get_atom_indices_for_trajectory(self, simulation: app.Simulation = None, topology: app.Topology = None) -> list:
         """
         Get atom indices for proteins and ligands, excluding hydrogens, water, and ions.
         
@@ -928,6 +977,8 @@ class MDSimulation:
         list
             List of atom indices to include in trajectory.
         """
+        assert simulation is not None or topology is not None, "Either simulation or topology must be provided"
+
         # Get atom indices for proteins and ligands, excluding hydrogens, water, and ions
         protein_chains = self.config['protein_info'].get('protein_chain_ids', [])
         ligand_chains = self.config['ligand_info'].get('ligand_names', [])
@@ -939,7 +990,14 @@ class MDSimulation:
         atom_indices = []
         excluded_counts = {'hydrogens': 0, 'excluded_residues': 0, 'wrong_chains': 0}
         
-        for atom in simulation.topology.atoms():
+        if simulation is not None:
+            topology = simulation.topology
+        elif topology is not None:
+            topology = topology
+        else:
+            raise ValueError("Either simulation or topology must be provided")
+
+        for atom in topology.atoms():
             # Skip excluded residues (water, ions)
             if atom.residue.name in excluded_residues:
                 excluded_counts['excluded_residues'] += 1
@@ -950,7 +1008,7 @@ class MDSimulation:
             else:
                 excluded_counts['wrong_chains'] += 1
         
-        total_atoms = simulation.topology.getNumAtoms()
+        total_atoms = topology.getNumAtoms()
         log_info(logger, f"Atom filtering summary: Total atoms: {total_atoms}, "
                         f"Selected: {len(atom_indices)}, "
                         f"Excluded - Hydrogens: {excluded_counts['hydrogens']}, "

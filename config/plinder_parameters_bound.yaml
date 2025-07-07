@@ -29,6 +29,9 @@ simulation_params:
   backbone_restraint_force: 100.0     # kcal/mol/A^2
   save_forces: true
   save_hessian: false
+  save_charges: true
+  save_sigam: true
+  save_epsilon: true
   platform:
     type: "CUDA"
     devices: '0'
