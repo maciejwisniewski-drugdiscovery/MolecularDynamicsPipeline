@@ -54,12 +54,9 @@ def run_simulation(config, sim_logger):
     # Preprocessing Step
     log_info(sim_logger, f"Starting system setup for {config['info']['simulation_id']}")
     sim.set_system()
-    if sim.config['simulation_params']['save_charges']:
-        sim._save_charges()
-    if sim.config['simulation_params']['save_sigmas']:
-        sim._save_sigmas()
-    if sim.config['simulation_params']['save_epsilons']:
-        sim._save_epsilons()
+    sim._save_charges()
+    sim._save_sigmas()
+    sim._save_epsilons()
     
     # Heat up
     if sim.config['info']['simulation_status']['warmup'] == 'Not Done':
