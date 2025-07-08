@@ -57,6 +57,9 @@ def run_simulation(config, sim_logger):
     sim._save_charges()
     sim._save_sigmas()
     sim._save_epsilons()
+    sim._save_harmonic_bond_parameters()
+    sim._save_harmonic_angle_parameters()
+    sim._save_periodic_torsion_parameters()
     
     # Heat up
     if sim.config['info']['simulation_status']['warmup'] == 'Not Done':
@@ -149,7 +152,7 @@ def main():
     parser.add_argument('--config_template', type=str, required=False, help='Path to config template file', default='config/plinder_parameters_bound.yaml')
     parser.add_argument('--filters', type=str, required=False, help='Filters to apply to the PLINDER systems', default='scripts/plinder_scripts/filters/train_plinder.yaml')
     parser.add_argument('--plinder_id', type=str, required=False, help='Single PLINDER ID to run (overrides filters)')
-    parser.add_argument('--plinder_ids_file', type=str, required=False, help='File containing PLINDER IDs to run')
+    parser.add_argument('--plinder_ids_file', type=str, required=False, help='File containing PLINDER IDs to run', default='batch_files/batch_2')
     parser.add_argument('--output_dir', type=str, required=False, help='Output directory', default='/mnt/raid/mwisniewski/Data/plinder_md/plinder_bound')
     parser.add_argument('--overwrite', type=bool, required=False, help='Overwrite existing simulation', default=False)
     parser.add_argument('--parallel', type=int, required=False, help='Number of parallel processes to use', default=1)

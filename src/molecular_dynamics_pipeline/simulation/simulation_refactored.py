@@ -15,7 +15,7 @@ import pickle
 
 from openmm import openmm
 from openmm import app, unit
-from openmm import NonbondedForce
+from openmm import NonbondedForce, HarmonicBondForce, HarmonicAngleForce, PeriodicTorsionForce
 from openmm import Platform, XmlSerializer, LangevinIntegrator, CustomExternalForce, MonteCarloBarostat
 from openmm.app.modeller import Modeller
 from openmm.app import ForceField
@@ -157,9 +157,17 @@ class MDSimulation:
         self.config['paths']['init_system_filepath'] = str(output_dir / f"{system_id}_init_system.xml")
         self.config['paths']['init_system_with_posres_filepath'] = str(output_dir / f"{system_id}_init_system_with_posres.xml")
         self.config['paths']['molecule_forcefield_dirpath'] = str(output_dir / f"forcefields")
+        
+        self.config['paths']['harmonic_bond_force_constants_filepath'] = str(output_dir / f"harmonic_bond_force_constants.npz")
+        self.config['paths']['harmonic_bond_lengths_filepath'] = str(output_dir / f"harmonic_bond_lengths.npz")
+
+        self.config['paths']['harmonic_angle_force_constants_filepath'] = str(output_dir / f"harmonic_angle_force_constants.npz")
+        self.config['paths']['periodic_torsion_force_constants_filepath'] = str(output_dir / f"periodic_torsion_force_constants.npz")
+
         self.config['paths']['charges_filepath'] = str(output_dir / f"charges.npz")
         self.config['paths']['sigmas_filepath'] = str(output_dir / f"sigmas.npz")
         self.config['paths']['epsilons_filepath'] = str(output_dir / f"epsilons.npz")
+
         os.makedirs(self.config['paths']['molecule_forcefield_dirpath'], exist_ok=True)
 
         # Per-stage file paths
@@ -340,6 +348,106 @@ class MDSimulation:
             charges.append(charge._value)
         charges = np.array(charges, dtype=np.float64)
         np.savez_compressed(self.config['paths']['charges_filepath'], charges=charges) 
+
+    def _save_harmonic_bond_parameters(self):
+        if os.path.exists(self.config['paths']['harmonic_bond_force_constants_filepath']):
+            log_info(logger, "Harmonic force constants already exist, skipping save.")
+            return
+        if os.path.exists(self.config['paths']['harmonic_bond_lengths_filepath']):
+            log_info(logger, "Harmonic bond lengths already exist, skipping save.")
+            return
+        atom_indices = self._get_atom_indices_for_trajectory(topology = self.model.topology)
+        atom_indices = [atom_idx + 1 for atom_idx in atom_indices]
+        atom_indices_mapping = {atom_idx: i for i, atom_idx in enumerate(atom_indices)}
+
+        harmonic_bonds = [f for f in self.system.getForces() if isinstance(f, HarmonicBondForce)][0]
+
+        harmonic_force_constants = np.zeros((len(atom_indices), len(atom_indices)), dtype=np.float64)
+        harmonic_bond_lengths = np.zeros((len(atom_indices), len(atom_indices)), dtype=np.float64)
+
+        num_bonds = harmonic_bonds.getNumBonds()
+        for bond in tqdm(range(num_bonds), desc="Saving harmonic bond parameters", total=num_bonds):
+            atom_i, atom_j, equi_length, k = harmonic_bonds.getBondParameters(bond)
+            if atom_i not in atom_indices:
+                continue
+            if atom_j not in atom_indices:
+                continue
+            harmonic_force_constants[atom_indices_mapping[atom_i], atom_indices_mapping[atom_j]] = k._value
+            harmonic_force_constants[atom_indices_mapping[atom_j], atom_indices_mapping[atom_i]] = k._value
+            harmonic_bond_lengths[atom_indices_mapping[atom_i], atom_indices_mapping[atom_j]] = equi_length._value
+            harmonic_bond_lengths[atom_indices_mapping[atom_j], atom_indices_mapping[atom_i]] = equi_length._value
+
+            np.savez_compressed(self.config['paths']['harmonic_bond_force_constants_filepath'], harmonic_force_constants=harmonic_force_constants)
+            np.savez_compressed(self.config['paths']['harmonic_bond_lengths_filepath'], harmonic_bond_lengths=harmonic_bond_lengths)
+
+    def _save_harmonic_angle_parameters(self):
+        if os.path.exists(self.config['paths']['harmonic_angle_force_constants_filepath']):
+            log_info(logger, "Harmonic angle force constants already exist, skipping save.")
+            return
+        atom_indices = self._get_atom_indices_for_trajectory(topology = self.model.topology)
+        atom_indices = [atom_idx + 1 for atom_idx in atom_indices]
+        atom_indices_mapping = {atom_idx: i for i, atom_idx in enumerate(atom_indices)}
+
+        harmonic_angles = [f for f in self.system.getForces() if isinstance(f, HarmonicAngleForce)][0]
+
+        num_angles = harmonic_angles.getNumAngles()
+
+        harmonic_angle_force_constants = []
+        for angle_idx in tqdm(range(num_angles), desc="Saving harmonic angle parameters", total=num_angles):
+            atom_i, atom_j, atom_k, equi_angle, k = harmonic_angles.getAngleParameters(angle_idx)
+            if atom_i not in atom_indices:
+                continue
+            if atom_j not in atom_indices:
+                continue
+            if atom_k not in atom_indices:
+                continue
+
+            harmonic_angle_force_constant = [
+                atom_indices_mapping[atom_i], 
+                atom_indices_mapping[atom_j], 
+                atom_indices_mapping[atom_k],
+                equi_angle._value,
+                k._value
+                ]
+            harmonic_angle_force_constants.append(harmonic_angle_force_constant)
+
+        harmonic_angle_force_constants = np.array(harmonic_angle_force_constants, dtype=np.float64)
+        np.savez_compressed(self.config['paths']['harmonic_angle_force_constants_filepath'], harmonic_angle_force_constants=harmonic_angle_force_constants)
+
+    def _save_periodic_torsion_parameters(self):
+        if os.path.exists(self.config['paths']['periodic_torsion_force_constants_filepath']):
+            log_info(logger, "Periodic torsion force constants already exist, skipping save.")
+            return
+        atom_indices = self._get_atom_indices_for_trajectory(topology = self.model.topology)
+        atom_indices = [atom_idx + 1 for atom_idx in atom_indices]
+        atom_indices_mapping = {atom_idx: i for i, atom_idx in enumerate(atom_indices)}
+
+        periodic_torsions = [f for f in self.system.getForces() if isinstance(f, PeriodicTorsionForce)][0]
+        num_torsions = periodic_torsions.getNumTorsions()
+        periodic_torsion_force_constants = []
+        for torsion_idx in tqdm(range(num_torsions), desc="Saving periodic torsion parameters", total=num_torsions):
+            atom_i, atom_j, atom_k, atom_l, periodicity, phase, k = periodic_torsions.getTorsionParameters(torsion_idx)
+            if atom_i not in atom_indices:
+                continue
+            if atom_j not in atom_indices:
+                continue
+            if atom_k not in atom_indices:
+                continue
+            if atom_l not in atom_indices:
+                continue
+
+            periodic_torsion_force_constant = [
+                atom_indices_mapping[atom_i], 
+                atom_indices_mapping[atom_j], 
+                atom_indices_mapping[atom_k], 
+                atom_indices_mapping[atom_l],
+                periodicity,
+                phase._value,
+                k._value
+            ]
+            periodic_torsion_force_constants.append(periodic_torsion_force_constant)
+        periodic_torsion_force_constants = np.array(periodic_torsion_force_constants, dtype=np.float64)
+        np.savez_compressed(self.config['paths']['periodic_torsion_force_constants_filepath'], periodic_torsion_force_constants=periodic_torsion_force_constants)
 
     def _save_sigmas(self):
         """Save sigmas to a file"""
