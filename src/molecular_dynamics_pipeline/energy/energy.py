@@ -16,6 +16,7 @@ import biotite.structure.io.pdbx as pdbx
 import biotite.structure.io.xtc as xtc
 from biotite.interface import openmm as biotite_openmm
 
+import openmm
 from openmm import *
 from openmm.app import *
 from openmm.unit import *
@@ -192,7 +193,7 @@ def split_molecular_dynamics_into_components(topology_filepath: Path,
 
 def calculate_component_energy(component_topology_filepath: Path, 
                                 component_trajectory_filepath: Path,
-                                forcefield_dirpath: Path) -> List[float]:
+                                forcefield_filepath: Path) -> List[float]:
     """
     Calculate the potential energy for each frame of a component's trajectory.
     """
@@ -213,14 +214,9 @@ def calculate_component_energy(component_topology_filepath: Path,
     all_coords = np.concatenate([component_topology_coords[None, ...], coords], axis=0)
 
     # Setup forcefield
-    forcefield = ForceField(
-        "amber/protein.ff14SB.xml",
-        "amber/tip3p_standard.xml",
-        "amber/tip3p_HFE_multivalent.xml",
-    )
-    for forcefield_file in forcefield_dirpath.glob('*.xml'):
-        forcefield.loadFile(str(forcefield_file))
-    
+    with open(forcefield_filepath, 'rb') as f:
+        forcefield = pickle.load(f)
+
     # For vacuum calculations, NoCutoff is appropriate
     system = forcefield.createSystem(component_topology, nonbondedMethod=NoCutoff)
     # Integrator settings don't matter much as we are not running dynamics
@@ -241,7 +237,7 @@ def calculate_component_energy(component_topology_filepath: Path,
 def calculate_interaction_energies(
     topology_filepath: Path,
     trajectory_filepath: Path,
-    forcefield_dirpath: Path,
+    forcefield_filepath: Path,
     output_dir: Path,
     stage: str = "production"
 ):
@@ -294,7 +290,7 @@ def calculate_interaction_energies(
         energies = calculate_component_energy(
             component_topology_filepath=top_file,
             component_trajectory_filepath=traj_file,
-            forcefield_dirpath=forcefield_dirpath
+            forcefield_filepath=forcefield_filepath
         )
         all_energies[component_name] = energies
 
@@ -397,6 +393,6 @@ if __name__ == '__main__':
     calculate_interaction_energies(
         topology_filepath=output_dir / f'{plinder_id}_init_topology.cif',
         trajectory_filepath=output_dir / f'trajectories/{plinder_id}_warmup_trajectory.xtc',
-        forcefield_dirpath = output_dir / f'forcefields',
+        forcefield_filepath = output_dir / f'forcefields' / f'system_forcefield.pkl',
         output_dir=output_dir / 'energies'
     )

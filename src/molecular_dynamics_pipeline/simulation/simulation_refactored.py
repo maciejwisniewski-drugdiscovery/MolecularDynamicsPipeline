@@ -324,7 +324,7 @@ class MDSimulation:
             self._load_system_from_files(init_topology_path, init_system_path, init_posres_path)
         else:
             log_info(logger, "Processing inputs to generate new system and topology files.")
-            self._create_system_from_scratch()
+        self._create_system_from_scratch()
 
     def _save_charges(self):
         """Save charges to a file"""
@@ -433,7 +433,8 @@ class MDSimulation:
                 padding=self.config['preprocessing']['box_padding'] * unit.nanometers,
                 ionicStrength=self.config['preprocessing']['ionic_strength'] * unit.molar,
             )
-        
+        with open(Path(self.config['paths']['molecule_forcefield_dirpath']) / f"system_forcefield.pkl", 'wb') as f:
+            pickle.dump(system_generator.forcefield, f)
         self.model = complex_model
         
         log_info(logger, "Creating OpenMM system.")
@@ -944,7 +945,7 @@ class MDSimulation:
             calculate_interaction_energies(
                 topology_filepath=topology_path,
                 trajectory_filepath=trajectory_path,
-                forcefield_dirpath=forcefield_dirpath,
+                forcefield_filepath = forcefield_dirpath / f'system_forcefield.pkl',
                 output_dir=energy_output_dir,
                 stage=stage
             )
