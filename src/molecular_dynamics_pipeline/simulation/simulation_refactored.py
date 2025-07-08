@@ -377,8 +377,8 @@ class MDSimulation:
             harmonic_bond_lengths[atom_indices_mapping[atom_i], atom_indices_mapping[atom_j]] = equi_length._value
             harmonic_bond_lengths[atom_indices_mapping[atom_j], atom_indices_mapping[atom_i]] = equi_length._value
 
-            np.savez_compressed(self.config['paths']['harmonic_bond_force_constants_filepath'], harmonic_force_constants=harmonic_force_constants)
-            np.savez_compressed(self.config['paths']['harmonic_bond_lengths_filepath'], harmonic_bond_lengths=harmonic_bond_lengths)
+        np.savez_compressed(self.config['paths']['harmonic_bond_force_constants_filepath'], harmonic_force_constants=harmonic_force_constants)
+        np.savez_compressed(self.config['paths']['harmonic_bond_lengths_filepath'], harmonic_bond_lengths=harmonic_bond_lengths)
 
     def _save_harmonic_angle_parameters(self):
         if os.path.exists(self.config['paths']['harmonic_angle_force_constants_filepath']):
