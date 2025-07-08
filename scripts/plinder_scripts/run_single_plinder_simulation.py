@@ -97,7 +97,8 @@ def run_simulation(config, sim_logger):
         log_info(sim_logger, "Completed production run")
 
     # Energy Calculations
-    energy_stages = ['nvt_energy_calculation', 'npt_energy_calculation', 'production_energy_calculation']
+    #energy_stages = ['nvt_energy_calculation', 'npt_energy_calculation', 'production_energy_calculation']
+    energy_stages = []
     for energy_stage in energy_stages:
         base_stage = energy_stage.replace('_energy_calculation', '')
         if sim.config['info']['simulation_status'][energy_stage] == 'Not Done':
