@@ -19,8 +19,8 @@ DEFAULT_MEM="100G"                # Memory request
 DEFAULT_TIME="24:00:00"           # Wall time limit (24 hours)
 
 # Default simulation parameters
-DEFAULT_CONFIG_TEMPLATE="config/plinder_parameters_bound.yaml"
-DEFAULT_OUTPUT_DIR="${OUTPUT_DIR}"
+DEFAULT_CONFIG_TEMPLATE="/mnt/evafs/groups/sfglab/mwisniewski/Projects/MolecularDynamicsPipeline/config/plinder_parameters_bound.yaml"
+DEFAULT_OUTPUT_DIR="/mnt/evafs/groups/sfglab/mwisniewski/data/plinder_md"
 
 # Parse command line arguments
 PLINDER_ID_LIST="$1"
@@ -193,7 +193,9 @@ echo "==========================================================================
 
 # Activate virtual environment (EDIT FOR YOUR SETUP)
 # Replace with your actual virtual environment path
-# source /path/to/your/venv/bin/activate
+module load anaconda
+source /mnt/evafs/software/anaconda/v.4.0/etc/profile.d/conda.sh
+conda activate molecular_dynamics_pipeline
 
 # Change to project directory
 cd ${PROJECT_ROOT}
@@ -202,7 +204,7 @@ cd ${PROJECT_ROOT}
 export CUDA_VISIBLE_DEVICES=0
 
 # Run the simulation
-bash scripts/plinder_scripts/run_single_plinder.sh "${PLINDER_ID}" "${CONFIG_TEMPLATE}" "${OUTPUT_DIR}"
+bash plinder_scripts/run_single_plinder.sh "${PLINDER_ID}" "${CONFIG_TEMPLATE}" "${OUTPUT_DIR}"
 
 # Job completion
 echo "==============================================================================" 

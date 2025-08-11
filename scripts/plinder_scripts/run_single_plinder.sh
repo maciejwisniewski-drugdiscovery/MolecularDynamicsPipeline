@@ -107,7 +107,8 @@ echo "Starting PLINDER simulation for ID: $PLINDER_ID" | tee -a "$LOG_FILE"
 cd "$PROJECT_ROOT"
 
 # Run the simulation
-python scripts/plinder_scripts/run_single_plinder_simulation.py \
+source "/mnt/evafs/groups/sfglab/mwisniewski/Projects/MolecularDynamicsPipeline/plinder.env"
+python plinder_scripts/run_single_plinder_simulation.py \
     --plinder_id "$PLINDER_ID" \
     --config_template "$CONFIG_TEMPLATE" \
     --output_dir "$OUTPUT_DIR" \
