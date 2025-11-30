@@ -6,11 +6,9 @@ from rdkit.Chem import Draw
 from molecular_dynamics_pipeline.data.small_molecule import fix_autodock_output_ligand
 
 if __name__ == "__main__":
-    REFERENCE_SDF_FILEPATH = "/mnt/raid/mwisniewski/Projects/plinder_dynamics/ligand_113.sdf"
-    REFERENCE_PDBQT_FILEPATH = "/mnt/raid/mwisniewski/Projects/plinder_dynamics/ligand_113.pdbqt"
-    DOCKED_SDF_FILEPATH = "projects/student_projects/skoczylas/ligands/docked_sdf_ligands/ligand_113_out.sdf"
-    OUTPUT_SDF_FILEPATH = "projects/student_projects/skoczylas/ligands/docked_fixed_sdf_ligands/ligand_113_fixed.sdf"
-    SMILES = None
+    REFERENCE_SDF_FILEPATH = "/mnt/raid/mwisniewski/data/WUM/ACmodeling/ligands/1M17__10__dock.sdf"
+    SMILES=""
+    
 
     if not os.path.exists(REFERENCE_SDF_FILEPATH) and SMILES is None:
         raise ValueError("Reference SDF file doesn't exist and SMILES is not provided")
