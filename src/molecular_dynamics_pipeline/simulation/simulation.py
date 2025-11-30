@@ -1,6 +1,4 @@
 import os
-import yaml
-import argparse
 from pathlib import Path
 from copy import deepcopy
 import numpy as np
@@ -8,843 +6,1187 @@ from collections import defaultdict
 from tqdm import tqdm
 import logging
 import pdbfixer
-from rdkit import Chem
 from openff.toolkit.topology import Molecule
-from openbabel import pybel
+import pickle
 
+from openmm import openmm
 from openmm import app, unit
+from openmm import NonbondedForce, HarmonicBondForce, HarmonicAngleForce, PeriodicTorsionForce
 from openmm import Platform, XmlSerializer, LangevinIntegrator, CustomExternalForce, MonteCarloBarostat
 from openmm.app.modeller import Modeller
 from openmm.app import ForceField
 from openmmforcefields.generators import SystemGenerator, GAFFTemplateGenerator
 
+import biotite.interface.openmm as biotite_openmm 
+import biotite.structure.io.pdbx as pdbx
+
 from plinder.core.scores import query_index
-from molecular_dynamics_pipeline.utils.errors import NoneLigandError, NoneConformerError
 from molecular_dynamics_pipeline.utils.logger import setup_logger, log_info, log_error, log_warning, log_debug
 from molecular_dynamics_pipeline.utils.preprocessing import download_nonstandard_residue
 from molecular_dynamics_pipeline.data.small_molecule import load_molecule_to_openmm
-from molecular_dynamics_pipeline.data.biomolecules import fix_biomolecule_with_pdb2pqr
+from molecular_dynamics_pipeline.simulation.reporters import ForceReporter, HessianReporter
+from molecular_dynamics_pipeline.simulation.reporters import XTCReporter as own_XTCReporter
+
+from molecular_dynamics_pipeline.energy.energy import calculate_interaction_energies
 
 logger = setup_logger(name="plinder_dynamics", log_level=logging.INFO)
 
+# ==================================================================================================
+# HELPER FUNCTIONS
+# ==================================================================================================
 
-def add_backbone_posres(system, positions, atoms, restraint_force):
-  force = CustomExternalForce("k*periodicdistance(x, y, z, x0, y0, z0)^2")
-  force_amount = restraint_force * unit.kilocalories_per_mole/unit.angstroms**2
-  force.addGlobalParameter("k", force_amount)
-  force.addPerParticleParameter("x0")
-  force.addPerParticleParameter("y0")
-  force.addPerParticleParameter("z0")
-  for i, (atom_crd, atom) in enumerate(zip(positions, atoms)):
-    if atom.name in  ('CA', 'C', 'N'):
-      force.addParticle(i, atom_crd.value_in_unit(unit.nanometers))
-  posres_sys = deepcopy(system)
-  posres_sys.addForce(force)
-  return posres_sys
+def add_backbone_posres(system: openmm.System, positions: unit.Quantity, atoms: list, restraint_force: float) -> openmm.System:
+    """
+    Adds backbone position restraints to the system.
 
+    Parameters
+    ----------
+    system : openmm.System
+        The system to add restraints to.
+    positions : openmm.unit.Quantity
+        The reference positions for the restraints.
+    atoms : list
+        A list of atoms in the topology.
+    restraint_force : float
+        The force constant for the restraints in kcal/mol/Å².
+
+    Returns
+    -------
+    openmm.System
+        The system with added backbone position restraints.
+    """
+    force = CustomExternalForce("k*periodicdistance(x, y, z, x0, y0, z0)^2")
+    force_amount = restraint_force * unit.kilocalories_per_mole / unit.angstroms**2
+    force.addGlobalParameter("k", force_amount)
+    force.addPerParticleParameter("x0")
+    force.addPerParticleParameter("y0")
+    force.addPerParticleParameter("z0")
+    for i, (atom_crd, atom) in enumerate(zip(positions, atoms)):
+        if atom.name in ('CA', 'C', 'N'):
+            force.addParticle(i, atom_crd.value_in_unit(unit.nanometers))
+    posres_sys = deepcopy(system)
+    posres_sys.addForce(force)
+    return posres_sys
+
+
+def get_nonstandard_residues_template(nonstandard_residue: str) -> Molecule:
+    """
+    Downloads and loads a template for a non-standard residue.
+
+    Parameters
+    ----------
+    nonstandard_residue : str
+        The name of the non-standard residue.
+
+    Returns
+    -------
+    openff.toolkit.topology.Molecule
+        The OpenFF molecule object for the non-standard residue.
+    """
+    nonstandard_residue_file = f"{nonstandard_residue}.sdf"
+    nonstandard_residue_filepath = Path(os.getenv('CCD_SDF_DIR', '.')) / nonstandard_residue_file
+    if not nonstandard_residue_filepath.exists():
+        log_info(logger, f"Downloading non-standard residue template for {nonstandard_residue}")
+        if not download_nonstandard_residue(nonstandard_residue, nonstandard_residue_filepath):
+            raise FileNotFoundError(f"Nonstandard residue template {nonstandard_residue_file} not found or downloaded.")
+    return Molecule.from_file(str(nonstandard_residue_filepath))
+
+
+# ==================================================================================================
+# MDSimulation Class
+# ==================================================================================================
 
 class MDSimulation:
-    def __init__(self, config):
-        '''
-        Class for running molecular dynamics simulations with OpenMM
-        '''
+    """
+    A class to set up and run molecular dynamics simulations using OpenMM.
+    """
+    def __init__(self, config: dict):
+        """
+        Initializes the MDSimulation object.
+
+        Parameters
+        ----------
+        config : dict
+            A dictionary containing the simulation configuration.
+        """
         self.config = config
-        log_info(logger, f"Initializing MDSimulation with config file: {self.config['info']['simulation_id']}")
-        
-        if config['info'].get('use_plinder_index', False) == True:
-            PLINDEX = query_index(columns = ['system_id','ligand_ccd_code','ligand_id'], splits=["*"])
-            self.plindex = PLINDEX[PLINDEX['system_id'] == self.config['info']['system_id']]
-        else:
-            self.plindex = None
-
-        # Validate input files
-        if not any([os.path.exists(protein_file) for protein_file in self.config['paths']['raw_protein_files']]):
-            error_msg = f"One or more of the Protein files: {self.config['paths']['raw_protein_files']} dont exist!"
-            log_warning(logger, error_msg)
-            raise FileNotFoundError(error_msg)
-
-        if len(self.config['paths']['raw_ligand_files']) > 0:
-            assert any([os.path.exists(ligand_file) for ligand_file in self.config['paths']['raw_ligand_files']]), f"One or more of the Ligand files: {self.config['paths']['raw_ligand_files']} dont exist!"
-
-        self.set_ligand_info()
-        self.set_protein_info()
-        self.set_files_info()
-        self.set_simulation_info()
-
-        # Initialize simulation components
         self.system = None
+        self.system_with_posres = None
         self.model = None
         self.simulation = None
-        self.get_platform()
+        self.platform = None
 
-        # Create simulation output directory if it doesn't exist
-        os.makedirs(self.config['paths']['output_dir'], exist_ok=True)
+        log_info(logger, f"Initializing MDSimulation for system: {self.config['info']['system_id']}")
 
-
-    def set_files_info(self):
-        # Initial files
-        self.config['paths']['init_complex_filepath'] = os.path.join(self.config['paths']['output_dir'], f"{self.config['info']['system_id']}_init_complex.cif")
-        self.config['paths']['init_topology_filepath'] = os.path.join(self.config['paths']['output_dir'], f"{self.config['info']['system_id']}_init_topology.cif")
-        self.config['paths']['init_system_filepath'] = os.path.join(self.config['paths']['output_dir'], f"{self.config['info']['system_id']}_init_system.xml")
-        self.config['paths']['init_system_with_posres_filepath'] = os.path.join(self.config['paths']['output_dir'], f"{self.config['info']['system_id']}_init_system_with_posres.xml")
+        self._validate_inputs()
+        self._setup_paths()
+        self._setup_info()
+        self._setup_platform()
         
-        # Checkpoint files
-        checkpoint_dir = os.path.join(self.config['paths']['output_dir'], 'checkpoints')
-        os.makedirs(checkpoint_dir, exist_ok=True)
-        self.config['paths']['checkpoints'] = {}
-        self.config['paths']['checkpoints']['warmup_checkpoint_filepath'] = os.path.join(checkpoint_dir, f"{self.config['info']['system_id']}_warmup_checkpoint.dcd")
-        self.config['paths']['checkpoints']['backbone_removal_checkpoint_filepath'] = os.path.join(checkpoint_dir, f"{self.config['info']['system_id']}_backbone_removal_checkpoint.dcd")
-        self.config['paths']['checkpoints']['nvt_checkpoint_filepath'] = os.path.join(checkpoint_dir, f"{self.config['info']['system_id']}_nvt_checkpoint.dcd")
-        self.config['paths']['checkpoints']['npt_checkpoint_filepath'] = os.path.join(checkpoint_dir, f"{self.config['info']['system_id']}_npt_checkpoint.dcd")
-        self.config['paths']['checkpoints']['production_checkpoint_filepath'] = os.path.join(checkpoint_dir, f"{self.config['info']['system_id']}_production_checkpoint.dcd")
+        output_dir = Path(self.config['paths']['output_dir'])
+        output_dir.mkdir(exist_ok=True)
 
-        # Trajectory files
-        trajectory_dir = os.path.join(self.config['paths']['output_dir'], 'trajectories')
-        os.makedirs(trajectory_dir, exist_ok=True)
-        self.config['paths']['trajectories'] = {}
-        self.config['paths']['trajectories']['warmup_trajectory_filepath'] = os.path.join(trajectory_dir, f"{self.config['info']['system_id']}_warmup_trajectory.xtc")
-        self.config['paths']['trajectories']['backbone_removal_trajectory_filepath'] = os.path.join(trajectory_dir, f"{self.config['info']['system_id']}_backbone_removal_trajectory.xtc")
-        self.config['paths']['trajectories']['nvt_trajectory_filepath'] = os.path.join(trajectory_dir, f"{self.config['info']['system_id']}_nvt_trajectory.xtc")
-        self.config['paths']['trajectories']['npt_trajectory_filepath'] = os.path.join(trajectory_dir, f"{self.config['info']['system_id']}_npt_trajectory.xtc")
-        self.config['paths']['trajectories']['production_trajectory_filepath'] = os.path.join(trajectory_dir, f"{self.config['info']['system_id']}_production_trajectory.xtc")
-
-        # State Data Reporter files
-        state_data_reporter_dir = os.path.join(self.config['paths']['output_dir'], 'state_data_reporters')
-        os.makedirs(state_data_reporter_dir, exist_ok=True)
-        self.config['paths']['state_reporters'] = {}
-        self.config['paths']['state_reporters']['warmup_state_reporters_filepath'] = os.path.join(state_data_reporter_dir, f"{self.config['info']['system_id']}_warmup_state_data.csv")
-        self.config['paths']['state_reporters']['backbone_removal_state_reporters_filepath'] = os.path.join(state_data_reporter_dir, f"{self.config['info']['system_id']}_backbone_removal_state_data.csv")
-        self.config['paths']['state_reporters']['nvt_state_reporters_filepath'] = os.path.join(state_data_reporter_dir, f"{self.config['info']['system_id']}_nvt_state_data.csv")
-        self.config['paths']['state_reporters']['npt_state_reporters_filepath'] = os.path.join(state_data_reporter_dir, f"{self.config['info']['system_id']}_npt_state_data.csv")
-        self.config['paths']['state_reporters']['production_state_reporters_filepath'] = os.path.join(state_data_reporter_dir, f"{self.config['info']['system_id']}_production_state_data.csv")
+    def _validate_inputs(self):
+        """Validate existence of input protein and ligand files."""
+        log_debug(logger, "Validating input files.")
+        if not all(Path(p).exists() for p in self.config['paths'].get('raw_protein_files', [])):
+            error_msg = f"One or more protein files not found: {self.config['paths']['raw_protein_files']}"
+            log_error(logger, error_msg)
+            raise FileNotFoundError(error_msg)
         
-        # State Reporter Files
-        state_reporter_dir = os.path.join(self.config['paths']['output_dir'], 'states')
-        os.makedirs(state_reporter_dir, exist_ok=True)
-        self.config['paths']['states'] = {}
-        self.config['paths']['states']['warmup_state_filepath'] = os.path.join(state_reporter_dir, f"{self.config['info']['system_id']}_warmup_state.xml")
-        self.config['paths']['states']['backbone_removal_state_filepath'] = os.path.join(state_reporter_dir, f"{self.config['info']['system_id']}_backbone_removal_state.xml")
-        self.config['paths']['states']['nvt_state_filepath'] = os.path.join(state_reporter_dir, f"{self.config['info']['system_id']}_nvt_state.xml")
-        self.config['paths']['states']['npt_state_filepath'] = os.path.join(state_reporter_dir, f"{self.config['info']['system_id']}_npt_state.xml")
-        self.config['paths']['states']['production_state_filepath'] = os.path.join(state_reporter_dir, f"{self.config['info']['system_id']}_production_state.xml")
+        if self.config['paths'].get('raw_ligand_files'):
+            if not all(Path(l).exists() for l in self.config['paths']['raw_ligand_files']):
+                error_msg = f"One or more ligand files not found: {self.config['paths']['raw_ligand_files']}"
+                log_error(logger, error_msg)
+                raise FileNotFoundError(error_msg)
 
-        # Topology Files
-        topology_dir = os.path.join(self.config['paths']['output_dir'], 'topologies')
-        os.makedirs(topology_dir, exist_ok=True)
-        self.config['paths']['topologies'] = {}
-        self.config['paths']['topologies']['warmup_topology_filepath'] = os.path.join(topology_dir, f"{self.config['info']['system_id']}_warmup_topology.cif")
-        self.config['paths']['topologies']['backbone_removal_topology_filepath'] = os.path.join(topology_dir, f"{self.config['info']['system_id']}_backbone_removal_topology.cif")
-        self.config['paths']['topologies']['nvt_topology_filepath'] = os.path.join(topology_dir, f"{self.config['info']['system_id']}_nvt_topology.cif")
-        self.config['paths']['topologies']['npt_topology_filepath'] = os.path.join(topology_dir, f"{self.config['info']['system_id']}_npt_topology.cif")
-        self.config['paths']['topologies']['production_topology_filepath'] = os.path.join(topology_dir, f"{self.config['info']['system_id']}_production_topology.cif")
+    def _setup_paths(self):
+        """Generates and stores all necessary file paths for the simulation."""
+        log_debug(logger, "Setting up simulation file paths.")
+        output_dir = Path(self.config['paths']['output_dir'])
+        system_id = self.config['info']['system_id']
 
-
-    def set_ligand_info(self):
-        """Set ligand information to config"""
-
-        if self.config.get('ligand_info', None) is None:
-            self.config['ligand_info'] = {}
-
-        if self.config['ligand_info'].get('n_lig', None) is None:
-            self.config['ligand_info']['n_lig'] = len(self.config['paths']['raw_ligand_files'])
+        # Initial structure and system files
+        self.config['paths']['init_complex_filepath'] = str(output_dir / f"{system_id}_init_complex.cif")
+        self.config['paths']['init_topology_filepath'] = str(output_dir / f"{system_id}_init_topology.cif")
+        self.config['paths']['init_system_filepath'] = str(output_dir / f"{system_id}_init_system.xml")
+        self.config['paths']['init_system_with_posres_filepath'] = str(output_dir / f"{system_id}_init_system_with_posres.xml")
+        self.config['paths']['molecule_forcefield_dirpath'] = str(output_dir / f"forcefields")
         
-        if self.config['ligand_info'].get('ligand_names', None) is None:
-            self.config['ligand_info']['ligand_names'] = [os.path.splitext(os.path.basename(ligand_file))[0] for ligand_file in self.config['paths']['raw_ligand_files']]
-        
-        if self.config['ligand_info'].get('ligand_formats', None) is None:
-            self.config['ligand_info']['ligand_formats'] = [os.path.splitext(os.path.basename(ligand_file))[1] for ligand_file in self.config['paths']['raw_ligand_files']]
-        
-        if self.config['ligand_info'].get('ligand_ccd_codes', None) is None:
-            if self.plindex is not None:
-                self.config['ligand_info']['ligand_ccd_codes'] = [self.plindex[self.plindex['ligand_id'].str.endswith(ligand_name)]['ligand_ccd_code'].values[0] for ligand_name in self.config['ligand_info']['ligand_names']]
-            else:
-                self.config['ligand_info']['ligand_ccd_codes'] = ['LIG' for ligand_name in self.config['ligand_info']['ligand_names']]
-        
-        if self.config['ligand_info'].get('ligand_charges', None) is None:
-            self.config['ligand_info']['ligand_charges'] = {}
+        self.config['paths']['harmonic_bond_force_constants_filepath'] = str(output_dir / f"harmonic_bond_force_constants.npz")
+        self.config['paths']['harmonic_bond_lengths_filepath'] = str(output_dir / f"harmonic_bond_lengths.npz")
 
+        self.config['paths']['harmonic_angle_force_constants_filepath'] = str(output_dir / f"harmonic_angle_force_constants.npz")
+        self.config['paths']['periodic_torsion_force_constants_filepath'] = str(output_dir / f"periodic_torsion_force_constants.npz")
 
-    def set_protein_info(self):
-        """Set protein information to config"""
-        if self.config.get('protein_info', None) is None:
+        self.config['paths']['charges_filepath'] = str(output_dir / f"charges.npz")
+        self.config['paths']['sigmas_filepath'] = str(output_dir / f"sigmas.npz")
+        self.config['paths']['epsilons_filepath'] = str(output_dir / f"epsilons.npz")
+
+        os.makedirs(self.config['paths']['molecule_forcefield_dirpath'], exist_ok=True)
+
+        # Per-stage file paths
+        path_configs = {
+            'checkpoints': {'dir': 'checkpoints', 'suffix': 'checkpoint', 'ext': 'dcd'},
+            'trajectories': {'dir': 'trajectories', 'suffix': 'trajectory', 'ext': 'xtc'},
+            'state_reporters': {'dir': 'state_data_reporters', 'suffix': 'state_data', 'ext': 'csv'},
+            'states': {'dir': 'states', 'suffix': 'state', 'ext': 'xml'},
+            'topologies': {'dir': 'topologies', 'suffix': 'topology', 'ext': 'cif'},
+            'forces': {'dir': 'forces', 'suffix': 'forces', 'ext': 'npz'},
+            'hessian': {'dir': 'hessian', 'suffix': 'hessian', 'ext': 'npz'}
+        }
+        stages = ['warmup', 'backbone_removal', 'nvt', 'npt', 'production']
+
+        for key, p_config in path_configs.items():
+            self.config['paths'][key] = {}
+            p_dir = output_dir / p_config['dir']
+            p_dir.mkdir(exist_ok=True)
+            for stage in stages:
+                if key == 'state_reporters':
+                    path_key = f"{stage}_state_reporters_filepath"
+                else:
+                    path_key = f"{stage}_{p_config['suffix']}_filepath"
+                
+                filename = f"{system_id}_{stage}_{p_config['suffix']}.{p_config['ext']}"
+                self.config['paths'][key][path_key] = str(p_dir / filename)
+    
+    def _setup_info(self):
+        """Sets up protein, ligand, and simulation status information."""
+        log_debug(logger, "Setting up simulation info.")
+        self._set_protein_info()
+        self._set_ligand_info()
+        self._set_simulation_info()
+        
+    def _set_protein_info(self):
+        """Sets protein information in the config."""
+        if 'protein_info' not in self.config:
             self.config['protein_info'] = {}
         
-        if self.config['protein_info'].get('n_prot', None) is None:
-            self.config['protein_info']['n_prot'] = len(self.config['paths']['raw_protein_files'])
-        
-        if self.config['protein_info'].get('protein_names', None) is None:
-            self.config['protein_info']['protein_names'] = [os.path.splitext(os.path.basename(protein_file))[0] for protein_file in self.config['paths']['raw_protein_files']]
-        
-        if self.config['protein_info'].get('protein_formats', None) is None:
-            self.config['protein_info']['protein_formats'] = [os.path.splitext(os.path.basename(protein_file))[1] for protein_file in self.config['paths']['raw_protein_files']]
+        protein_files = self.config['paths'].get('raw_protein_files', [])
+        self.config['protein_info'].setdefault('n_prot', len(protein_files))
+        self.config['protein_info'].setdefault('protein_names', [Path(p).stem for p in protein_files])
+        self.config['protein_info'].setdefault('protein_formats', [Path(p).suffix for p in protein_files])
 
+        if 'protein_chain_ids' not in self.config['protein_info']:
+            all_chain_ids = []
+            for protein_file in protein_files:
+                all_chain_ids.extend(self._get_chain_ids_from_file(protein_file))
+            self.config['protein_info']['protein_chain_ids'] = list(set(all_chain_ids))
 
-    def set_simulation_info(self):
-        """Set simulation information to config"""
-        if self.config.get('simulation_params', None) is None:
-            raise KeyError("Simulation information not found in config file!") 
+    def _set_ligand_info(self):
+        """Sets ligand information in the config."""
+        if 'ligand_info' not in self.config:
+            self.config['ligand_info'] = {}
+
+        ligand_files = self.config['paths'].get('raw_ligand_files', [])
+        ligand_names = [Path(l).stem for l in ligand_files]
         
-        # Check Status of Simulation
+        self.config['ligand_info'].setdefault('n_lig', len(ligand_files))
+        self.config['ligand_info'].setdefault('ligand_names', ligand_names)
+        self.config['ligand_info'].setdefault('ligand_formats', [Path(l).suffix for l in ligand_files])
+        self.config['ligand_info'].setdefault('ligand_charges', {})
+
+        if self.config['ligand_info'].get('ligand_ccd_codes') is None:
+            if self.config['info'].get('use_plinder_index', False):
+                plindex = query_index(columns=['system_id', 'ligand_ccd_code', 'ligand_id'], splits=["*"])
+                system_index = plindex[plindex['system_id'] == self.config['info']['system_id']]
+                
+                ccd_codes = []
+                for name in ligand_names:
+                    entry = system_index[system_index['ligand_id'].str.endswith(name)]
+                    ccd_codes.append(entry['ligand_ccd_code'].values[0] if not entry.empty else 'LIG')
+                self.config['ligand_info']['ligand_ccd_codes'] = ccd_codes
+            else:
+                self.config['ligand_info']['ligand_ccd_codes'] = ['LIG'] * len(ligand_names)
+
+    def _set_simulation_info(self):
+        """Sets simulation status information."""
+        if 'simulation_params' not in self.config:
+            raise KeyError("`simulation_params` not found in config file!")
+            
         self.config['info']['simulation_status'] = {
-            'warmup': 'Done' if os.path.exists(self.config['paths']['topologies']['warmup_topology_filepath']) else 'Not Done',
-            'backbone_removal': 'Done' if os.path.exists(self.config['paths']['topologies']['backbone_removal_topology_filepath']) else 'Not Done',
-            'nvt': 'Done' if os.path.exists(self.config['paths']['topologies']['nvt_topology_filepath']) else 'Not Done',
-            'npt': 'Done' if os.path.exists(self.config['paths']['topologies']['npt_topology_filepath']) else 'Not Done',
-            'production': 'Done' if os.path.exists(self.config['paths']['topologies']['production_topology_filepath']) else 'Not Done'
+            stage: 'Done' if Path(self.config['paths']['topologies'][f'{stage}_topology_filepath']).exists() else 'Not Done'
+            for stage in ['warmup', 'backbone_removal', 'nvt', 'npt', 'production']
         }
+        
+        # Add energy calculation stages - check if energy output directory exists and has expected files
+        energy_output_dir = Path(self.config['paths']['output_dir']) / 'energies'
+        
+        # Check for each stage's energy calculation
+        for energy_stage in ['nvt', 'npt', 'production']:
+            energy_matrix_file = energy_output_dir / f'{energy_stage}_interaction_energy_matrix.npz'
+            energy_json_file = energy_output_dir / f'{energy_stage}_component_energies.json'
+            
+            self.config['info']['simulation_status'][f'{energy_stage}_energy_calculation'] = (
+                'Done' if energy_matrix_file.exists() and energy_json_file.exists() else 'Not Done'
+            )
 
+    def _setup_platform(self):
+        """Configures the OpenMM platform for the simulation."""
+        log_debug(logger, "Setting up OpenMM platform.")
+        platform_name = self.config['simulation_params']['platform']['type']
+        self.platform = Platform.getPlatformByName(platform_name)
+        if platform_name == 'CUDA':
+            self.platform.setPropertyDefaultValue('Precision', 'mixed')
+            device_index = self.config['simulation_params']['platform'].get('devices', '0')
+            self.platform.setPropertyDefaultValue('CudaDeviceIndex', str(device_index))
 
     def update_simulation_status(self, stage: str, status: str):
-        assert stage in self.config['info']['simulation_status'], f"Stage {stage} not found in config!"
-        self.config['info']['simulation_status'][stage] = status if os.path.exists(self.config['paths']['topologies'][f'{stage}_topology_filepath']) else 'Not Done'
-
-
-    def get_platform(self):
-        self.platform = Platform.getPlatformByName(self.config['simulation_params']['platform']['type'])
-        if self.platform.getName() == 'CUDA':
-            self.platform.setPropertyDefaultValue('Precision', 'mixed')
-            self.platform.setPropertyDefaultValue('CudaDeviceIndex', self.config['simulation_params']['platform']['devices'])
-
-
-    def process_protein_with_pdbfixer(self, input_filepath: str, ph: float = 7.4):
-        """Process the protein with PDBFixer"""
-
-        fixer = pdbfixer.PDBFixer(input_filepath)
-
-        nonstandard_residues = []
-        fixer.findNonstandardResidues()
-        for nonstd_res in fixer.nonstandardResidues:
-            nonstandard_residue_name = nonstd_res[0].name
-            nonstandard_residues.append(nonstandard_residue_name)
-
-        nonstandard_residues = list(set(nonstandard_residues))
-        for nonstd_res in nonstandard_residues:
-            fixer.downloadTemplate(nonstd_res)
-
-        for sequence in fixer.sequences:
-            for u_res in list(set(sequence.residues)):
-                fixer.downloadTemplate(u_res)
-
-        fixer.findMissingResidues()
-        fixer.findMissingAtoms()  # find missing heavy atoms
-        fixer.addMissingAtoms()  # add missing atoms and residues
-        fixer.addMissingHydrogens(ph)
-        
-        output_filepath = os.path.join(self.config['paths']['output_dir'], os.path.basename(input_filepath).replace('.pdb', '_pdbfixer.pdb'))
-        app.pdbxfile.PDBxFile.writeFile(fixer.topology, fixer.positions, open(output_filepath, 'w'))
-        return fixer, output_filepath, nonstandard_residues
-        
-
-    def d(self, input_filepath: str, output_pdb_filepath: str, ph: float = 7.4):
-        fix_biomolecule_with_pdb2pqr(receptor_pdb_filepath = input_filepath,
-                                     output_pdb_filepath = output_pdb_filepath,
-                                     ph = ph)
-        return output_pdb_filepath
-
-
-    def process_protein(self, input_filepath: str, ph: float = 7.4):
-        output_filepath = os.path.join(self.config['paths']['output_dir'], os.path.basename(input_filepath).replace('.pdb', '_fixed.pdb'))    
-        #fixer_filepath = self.process_protein_with_pdb2pqr(input_filepath=input_filepath, output_pdb_filepath=output_filepath, ph=ph)
-        fixer, output_filepath, nonstandard_residues = self.process_protein_with_pdbfixer(input_filepath, ph)
-        return fixer, nonstandard_residues
-
-
-    def process_ligand(self, input_filepath: str, input_format: str, input_name: str):
-        # At this moment we only support SDF files
-                   
-        # Create OpenFF Ligand Model
-        openff_molecule = load_molecule_to_openmm(input_filepath, input_format)
-
-        if self.config['ligand_info']['ligand_charges'].get(input_name, None):
-            openff_molecule.assign_partial_charges(partial_charge_method='gasteiger')
-            openff_molecule.partial_charges.magnitude = np.array(self.config['ligand_info']['ligand_charges'][input_name])
+        """Updates the status of a simulation stage."""
+        if stage in self.config['info']['simulation_status']:
+            self.config['info']['simulation_status'][stage] = status
         else:
-            try:
-                openff_molecule.assign_partial_charges(partial_charge_method="gasteiger", use_conformers=openff_molecule.conformers)
-                self.config['ligand_info']['ligand_charges'][input_name] = {'charges': openff_molecule.partial_charges.magnitude.tolist(), 'method': 'gasteiger'}
-            except:
-                openff_molecule.assign_partial_charges(partial_charge_method="gasteiger")
-                self.config['ligand_info']['ligand_charges'][input_name] = {'charges': openff_molecule.partial_charges.magnitude.tolist(), 'method': 'gasteiger'}
+            log_warning(logger, f"Attempted to update status for unknown stage: {stage}")
 
-        openff_molecule_topology = openff_molecule.to_topology()
-        openff_molecule_positions = openff_molecule.conformers[0].to("nanometers")
-
-        # Create OpenMM Ligand Model
-        openmm_molecule_topology = openff_molecule_topology.to_openmm()
-        openmm_molecule_positions = openff_molecule_positions.to_openmm()
-        openmm_molecule = Modeller(openmm_molecule_topology, openmm_molecule_positions)
-            
-        return openmm_molecule, openff_molecule
-
-
-    def process_complex(self):
-        # Load the complex structure        
-        if self.config['preprocessing']['process_protein'] == True:
-
-            protein_nonstandard_residues = []
-            
-            for idx, protein_filepath in enumerate(self.config['paths']['raw_protein_files']):
-                protein_pdbfixer, nonstandard_residues = self.process_protein(protein_filepath)
-                protein_nonstandard_residues.extend(nonstandard_residues)
-                if idx == 0:
-                    complex = Modeller(protein_pdbfixer.topology, protein_pdbfixer.positions)
-                else:
-                    complex.add(protein_pdbfixer.topology, protein_pdbfixer.positions)
-                if len(protein_nonstandard_residues) > 0:
-                    self.config['protein_info']['nonstandard_residues'] = protein_nonstandard_residues
-        else:
-            complex = app.pdbxfile.PDBxFile(self.config['paths']['init_topology_filepath'])
+    def _get_chain_ids_from_file(self, filepath: str) -> list[str]:
+        """
+        Extracts a list of unique chain IDs from a PDB or CIF file.
         
-        openff_molecules = []        
-        if self.config['preprocessing']['process_ligand'] == True:
-            chain_idx = len(complex.topology._chains)
-            for ligand_filepath, ligand_format, ligand_name, ligand_ccd in zip(self.config['paths']['raw_ligand_files'], 
-                                                                  self.config['ligand_info']['ligand_formats'],
-                                                                  self.config['ligand_info']['ligand_names'], 
-                                                                  self.config['ligand_info']['ligand_ccd_codes']):
-                openmm_molecule, openff_molecule = self.process_ligand(ligand_filepath, ligand_format, ligand_name)
-                openmm_molecule.name = ligand_name
-                openff_molecules.append(openff_molecule)
-                openmm_molecule.topology.id = ligand_name
-                complex.add(openmm_molecule.topology, openmm_molecule.positions)
-                complex.topology._chains[chain_idx].id = ligand_name
-                for res_idx in range(len(complex.topology._chains[chain_idx]._residues)):
-                    complex.topology._chains[chain_idx]._residues[res_idx].name = ligand_name
-                    
-                    new_atom_values = defaultdict(int)
-                    for atom_idx, atom in enumerate(complex.topology._chains[chain_idx]._residues[res_idx]._atoms):
-                        if len(atom.name) == 0:
-                            if atom.element.symbol not in new_atom_values:
-                                new_atom_values[atom.element.symbol] = 1
-                            else:
-                                new_atom_values[atom.element.symbol] += 1
-                            
-                            complex.topology._chains[chain_idx]._residues[res_idx]._atoms[atom_idx].name = atom.element.symbol + str(new_atom_values[atom.element.symbol])
-                chain_idx += 1
-
-        return complex, openff_molecules
-
-    def get_nonstandard_residues_template(self, nonstandard_residue: str):
-        nonstandard_residue_file = nonstandard_residue+'.sdf'
-        nonstandard_residue_filepath = Path(os.getenv('CCD_SDF_DIR')) / nonstandard_residue_file
-        if not nonstandard_residue_filepath.exists():
-            check = download_nonstandard_residue(nonstandard_residue, nonstandard_residue_filepath)
-            if check == False:
-                raise FileNotFoundError(f"Nonstandard residue template {nonstandard_residue_file} not found in {os.getenv('CCD_SDF_DIR')}")
-        nonstandard_residues_template = Molecule.from_file(nonstandard_residue_filepath)
-        return nonstandard_residues_template
+        Parameters
+        ----------
+        filepath : str
+            Path to the input file.
+            
+        Returns
+        -------
+        list[str]
+            A list of unique chain IDs found in the file.
+        """
+        p = Path(filepath)
+        if p.suffix == '.pdb':
+            structure = app.PDBFile(filepath)
+        elif p.suffix == '.cif':
+            structure = app.PDBxFile(filepath)
+        else:
+            log_warning(logger, f"Unsupported file format for reading chain IDs: {p.suffix}")
+            return []
+            
+        chain_ids = []
+        for chain in structure.getTopology().chains():
+            if chain.id not in chain_ids:
+                chain_ids.append(chain.id)
+        return chain_ids
 
     def set_system(self):
-        if all([os.path.exists(self.config['paths']['init_system_filepath']),
-                os.path.exists(self.config['paths']['init_system_with_posres_filepath']),
-                os.path.exists(self.config['paths']['init_topology_filepath'])]):
-            if self.config['paths']['init_topology_filepath'].endswith('.cif'):
-                complex = app.pdbxfile.PDBxFile(self.config['paths']['init_topology_filepath'])
-            elif self.config['paths']['init_topology_filepath'].endswith('.pdb'):
-                complex = app.pdbfile.PDBFile(self.config['paths']['init_topology_filepath'])
-            complex = Modeller(complex.topology, complex.positions)
-            system = XmlSerializer.deserialize(open(self.config['paths']['init_system_filepath']).read())
-            system_with_posres = XmlSerializer.deserialize(open(self.config['paths']['init_system_with_posres_filepath']).read())
+        """
+        Main method to set up the simulation system.
+        It loads from files if they exist, otherwise it processes inputs to create them.
+        """
+        init_system_path = self.config['paths']['init_system_filepath']
+        init_posres_path = self.config['paths']['init_system_with_posres_filepath']
+        init_topology_path = self.config['paths']['init_topology_filepath']
+
+        if all(Path(p).exists() for p in [init_system_path, init_posres_path, init_topology_path]):
+            log_info(logger, "Loading pre-existing system, topology, and position restraint files.")
+            self._load_system_from_files(init_topology_path, init_system_path, init_posres_path)
         else:
-            complex, openff_molecules = self.process_complex()
-            nonstandard_residues_templates = []
-            if self.config['protein_info'].get('nonstandard_residues', None) is not None:
-                for nonstandard_residue in self.config['protein_info']['nonstandard_residues']:
-                    nonstandard_residues_template = self.get_nonstandard_residues_template(nonstandard_residue)
-                    nonstandard_residues_templates.append(nonstandard_residues_template)
+            log_info(logger, "Processing inputs to generate new system and topology files.")
+            self._create_system_from_scratch()
 
-            generator_molecules = openff_molecules + nonstandard_residues_templates
+    def _save_charges(self):
+        """Save charges to a file"""
+        if os.path.exists(self.config['paths']['charges_filepath']):
+            log_info(logger, "Charges already exist, skipping save.")
+            return
+        
+        atom_indices = self._get_atom_indices_for_trajectory(topology = self.model.topology)
+        nonbonded = [f for f in self.system.getForces() if isinstance(f, NonbondedForce)][0]
+        charges = []
+        for i in atom_indices:
+            charge, _, _ = nonbonded.getParticleParameters(i)
+            charges.append(charge._value)
+        charges = np.array(charges, dtype=np.float64)
+        np.savez_compressed(self.config['paths']['charges_filepath'], charges=charges) 
+
+    def _save_harmonic_bond_parameters(self):
+        if os.path.exists(self.config['paths']['harmonic_bond_force_constants_filepath']):
+            log_info(logger, "Harmonic force constants already exist, skipping save.")
+            return
+        if os.path.exists(self.config['paths']['harmonic_bond_lengths_filepath']):
+            log_info(logger, "Harmonic bond lengths already exist, skipping save.")
+            return
+        atom_indices = self._get_atom_indices_for_trajectory(topology = self.model.topology)
+        atom_indices = [atom_idx + 1 for atom_idx in atom_indices]
+        atom_indices_mapping = {atom_idx: i for i, atom_idx in enumerate(atom_indices)}
+
+        harmonic_bonds = [f for f in self.system.getForces() if isinstance(f, HarmonicBondForce)][0]
+
+        harmonic_force_constants = np.zeros((len(atom_indices), len(atom_indices)), dtype=np.float64)
+        harmonic_bond_lengths = np.zeros((len(atom_indices), len(atom_indices)), dtype=np.float64)
+
+        num_bonds = harmonic_bonds.getNumBonds()
+        for bond in tqdm(range(num_bonds), desc="Saving harmonic bond parameters", total=num_bonds):
+            atom_i, atom_j, equi_length, k = harmonic_bonds.getBondParameters(bond)
+            if atom_i not in atom_indices:
+                continue
+            if atom_j not in atom_indices:
+                continue
+            harmonic_force_constants[atom_indices_mapping[atom_i], atom_indices_mapping[atom_j]] = k._value
+            harmonic_force_constants[atom_indices_mapping[atom_j], atom_indices_mapping[atom_i]] = k._value
+            harmonic_bond_lengths[atom_indices_mapping[atom_i], atom_indices_mapping[atom_j]] = equi_length._value
+            harmonic_bond_lengths[atom_indices_mapping[atom_j], atom_indices_mapping[atom_i]] = equi_length._value
+
+        np.savez_compressed(self.config['paths']['harmonic_bond_force_constants_filepath'], harmonic_force_constants=harmonic_force_constants)
+        np.savez_compressed(self.config['paths']['harmonic_bond_lengths_filepath'], harmonic_bond_lengths=harmonic_bond_lengths)
+
+    def _save_harmonic_angle_parameters(self):
+        if os.path.exists(self.config['paths']['harmonic_angle_force_constants_filepath']):
+            log_info(logger, "Harmonic angle force constants already exist, skipping save.")
+            return
+        atom_indices = self._get_atom_indices_for_trajectory(topology = self.model.topology)
+        atom_indices = [atom_idx + 1 for atom_idx in atom_indices]
+        atom_indices_mapping = {atom_idx: i for i, atom_idx in enumerate(atom_indices)}
+
+        harmonic_angles = [f for f in self.system.getForces() if isinstance(f, HarmonicAngleForce)][0]
+
+        num_angles = harmonic_angles.getNumAngles()
+
+        harmonic_angle_force_constants = []
+        for angle_idx in tqdm(range(num_angles), desc="Saving harmonic angle parameters", total=num_angles):
+            atom_i, atom_j, atom_k, equi_angle, k = harmonic_angles.getAngleParameters(angle_idx)
+            if atom_i not in atom_indices:
+                continue
+            if atom_j not in atom_indices:
+                continue
+            if atom_k not in atom_indices:
+                continue
+
+            harmonic_angle_force_constant = [
+                atom_indices_mapping[atom_i], 
+                atom_indices_mapping[atom_j], 
+                atom_indices_mapping[atom_k],
+                equi_angle._value,
+                k._value
+                ]
+            harmonic_angle_force_constants.append(harmonic_angle_force_constant)
+
+        harmonic_angle_force_constants = np.array(harmonic_angle_force_constants, dtype=np.float64)
+        np.savez_compressed(self.config['paths']['harmonic_angle_force_constants_filepath'], harmonic_angle_force_constants=harmonic_angle_force_constants)
+
+    def _save_periodic_torsion_parameters(self):
+        if os.path.exists(self.config['paths']['periodic_torsion_force_constants_filepath']):
+            log_info(logger, "Periodic torsion force constants already exist, skipping save.")
+            return
+        atom_indices = self._get_atom_indices_for_trajectory(topology = self.model.topology)
+        atom_indices = [atom_idx + 1 for atom_idx in atom_indices]
+        atom_indices_mapping = {atom_idx: i for i, atom_idx in enumerate(atom_indices)}
+
+        periodic_torsions = [f for f in self.system.getForces() if isinstance(f, PeriodicTorsionForce)][0]
+        num_torsions = periodic_torsions.getNumTorsions()
+        periodic_torsion_force_constants = []
+        for torsion_idx in tqdm(range(num_torsions), desc="Saving periodic torsion parameters", total=num_torsions):
+            atom_i, atom_j, atom_k, atom_l, periodicity, phase, k = periodic_torsions.getTorsionParameters(torsion_idx)
+            if atom_i not in atom_indices:
+                continue
+            if atom_j not in atom_indices:
+                continue
+            if atom_k not in atom_indices:
+                continue
+            if atom_l not in atom_indices:
+                continue
+
+            periodic_torsion_force_constant = [
+                atom_indices_mapping[atom_i], 
+                atom_indices_mapping[atom_j], 
+                atom_indices_mapping[atom_k], 
+                atom_indices_mapping[atom_l],
+                periodicity,
+                phase._value,
+                k._value
+            ]
+            periodic_torsion_force_constants.append(periodic_torsion_force_constant)
+        periodic_torsion_force_constants = np.array(periodic_torsion_force_constants, dtype=np.float64)
+        np.savez_compressed(self.config['paths']['periodic_torsion_force_constants_filepath'], periodic_torsion_force_constants=periodic_torsion_force_constants)
+
+    def _save_sigmas(self):
+        """Save sigmas to a file"""
+        if os.path.exists(self.config['paths']['sigmas_filepath']):
+            log_info(logger, "Sigmas already exist, skipping save.")
+            return
+        
+        atom_indices = self._get_atom_indices_for_trajectory(topology = self.model.topology)
+        nonbonded = [f for f in self.system.getForces() if isinstance(f, NonbondedForce)][0]
+        sigmas = []
+        for i in atom_indices:
+            _, sigma, _ = nonbonded.getParticleParameters(i)
+            sigmas.append(sigma._value)
+        sigmas = np.asarray(sigmas, dtype=np.float64)
+        np.savez_compressed(self.config['paths']['sigmas_filepath'], sigmas=sigmas) 
+
+    def _save_epsilons(self):
+        """Save epsilons to a file"""
+        if os.path.exists(self.config['paths']['epsilons_filepath']):
+            log_info(logger, "Epsilons already exist, skipping save.")
+            return
+        
+        atom_indices = self._get_atom_indices_for_trajectory(topology = self.model.topology)
+        nonbonded = [f for f in self.system.getForces() if isinstance(f, NonbondedForce)][0]
+        epsilons = []
+        for i in atom_indices:
+            _, _, epsilon = nonbonded.getParticleParameters(i)
+            epsilons.append(epsilon._value)
+        epsilons = np.asarray(epsilons, dtype=np.float64)
+        np.savez_compressed(self.config['paths']['epsilons_filepath'], epsilons=epsilons) 
+
+    def _load_system_from_files(self, topology_path, system_path, posres_path):
+        """Loads the system, topology, and position restraints from files."""
+        if topology_path.endswith('.cif'):
+            complex_file = app.PDBxFile(topology_path)
+        elif topology_path.endswith('.pdb'):
+            complex_file = app.PDBFile(topology_path)
+        else:
+            raise ValueError(f"Unsupported topology file format: {topology_path}")
+
+        self.model = Modeller(complex_file.topology, complex_file.positions)
+        with open(system_path, 'r') as f:
+            self.system = XmlSerializer.deserialize(f.read())
+        with open(posres_path, 'r') as f:
+            self.system_with_posres = XmlSerializer.deserialize(f.read())
+
+    def _create_system_from_scratch(self):
+        """Processes protein and ligand inputs to create and save the simulation system."""
+        complex_model, openff_molecules = self.process_complex()
+        
+        nonstandard_templates = []
+        if 'nonstandard_residues' in self.config['protein_info']:
+            for res in self.config['protein_info']['nonstandard_residues']:
+                nonstandard_templates.append(get_nonstandard_residues_template(res))
+
+        generator_molecules = openff_molecules + nonstandard_templates
+        
+        forcefield_kwargs = self.config['forcefield'].get('forcefield_kwargs', {})
+        hydrogen_mass = forcefield_kwargs.get('hydrogenMass')
+        if hydrogen_mass:
+            forcefield_kwargs['hydrogenMass'] = hydrogen_mass * unit.amu
+
+        gaff = GAFFTemplateGenerator(forcefield=self.config['forcefield']['ligandFF'])
+        ffxml_contents = {}
+        for generator_molecule in generator_molecules:
+            ffxml_contents[generator_molecule.name] = gaff.generate_residue_template(generator_molecule)
+            with open(Path(self.config['paths']['molecule_forcefield_dirpath']) / f"{generator_molecule.name}.xml", 'w') as f:
+                f.write(ffxml_contents[generator_molecule.name])
+
+        system_generator = SystemGenerator(
+            forcefields=[
+                self.config['forcefield']['proteinFF'],
+                self.config['forcefield']['nucleicFF'],
+                self.config['forcefield']['waterFF'],
+                gaff.gaff_xml_filename
+            ],
+            small_molecule_forcefield=self.config['forcefield']['ligandFF'],
+            molecules=generator_molecules,
+            forcefield_kwargs=forcefield_kwargs
+        )
+
+        # Register the GAFF template generator for our custom molecules (ligands and non-standard residues)
+        gaff_gen = GAFFTemplateGenerator(molecules=generator_molecules, forcefield=self.config['forcefield']['ligandFF'])
+        system_generator.forcefield.registerTemplateGenerator(gaff_gen.generator)
+
+        if self.config['preprocessing'].get('add_solvent', True):
+            log_info(logger, "Adding solvent to the system.")
+            # Use a plain protein/nucleic + water ForceField for solvation to avoid template mismatches
+            ff_args = [self.config['forcefield']['proteinFF']]
+            nucleic_ff = self.config['forcefield'].get('nucleicFF')
+            if nucleic_ff:
+                ff_args.append(nucleic_ff)
+            ff_args.append(self.config['forcefield']['waterFF'])
+            solvation_ff = ForceField(*ff_args)
+            complex_model.addSolvent(
+                solvation_ff,
+                model=self.config['forcefield']['water_model'], boxShape='octahedron',
+                padding=self.config['preprocessing']['box_padding'] * unit.nanometers,
+                ionicStrength=self.config['preprocessing']['ionic_strength'] * unit.molar,
+            )
+        with open(Path(self.config['paths']['molecule_forcefield_dirpath']) / f"system_forcefield.pkl", 'wb') as f:
+            pickle.dump(system_generator.forcefield, f)
+        self.model = complex_model
+        
+        log_info(logger, "Creating OpenMM system.")
+        self.system = system_generator.create_system(self.model.topology, molecules=generator_molecules)
+
+        log_info(logger, "Adding backbone position restraints.")
+        self.system_with_posres = add_backbone_posres(
+            self.system, self.model.positions, list(self.model.topology.atoms()),
+            self.config['simulation_params']['backbone_restraint_force']
+        )
+        
+        self._save_initial_files()
+
+    def _save_initial_files(self):
+        """Saves the initial topology, system, and position-restrained system files."""
+        log_info(logger, "Saving initial topology and system XML files.")
+
+        biotite_topology = biotite_openmm.from_topology(self.model.topology)
+        # Convert OpenMM positions from nanometers to angstroms for biotite
+        positions_angstrom = self.model.positions.value_in_unit(unit.angstrom)
+        biotite_topology.coord = np.array(positions_angstrom, dtype=np.float32)
+
+        cif_file = pdbx.CIFFile()
+        pdbx.set_structure(cif_file, biotite_topology, include_bonds=True)
+        cif_file.write(self.config['paths']['init_topology_filepath'])
+
+        # pdb_path = self.config['paths']['init_topology_filepath'].replace('.cif', '.pdb')
+        # with open(pdb_path, 'w') as f:
+        #     app.PDBFile.writeFile(self.model.topology, self.model.positions, f, keepIds=True)
+        
+        pdb_path = self.config['paths']['init_topology_filepath'].replace('.cif', '.pdb')
+        with open(pdb_path, 'w') as f:
+            app.PDBFile.writeFile(self.model.topology, self.model.positions, f, keepIds=True)
+
+        with open(self.config['paths']['init_system_filepath'], 'w') as f:
+            f.write(XmlSerializer.serialize(self.system))
             
-            #print(generator_molecules)
-            system_generator = SystemGenerator(
-                forcefields = [self.config['forcefield']['proteinFF'], 
-                               self.config['forcefield']['nucleicFF'], 
-                               self.config['forcefield']['waterFF']],
-                small_molecule_forcefield = self.config['forcefield']['ligandFF'],
-                molecules = generator_molecules,
-                forcefield_kwargs = {
-                    'constraints': self.config['forcefield']['forcefield_kwargs'].get('constraints', None),
-                    'rigidWater': self.config['forcefield']['forcefield_kwargs'].get('rigidWater', True),
-                    'removeCMMotion': self.config['forcefield']['forcefield_kwargs'].get('removeCMMotion', False),
-                    'hydrogenMass': self.config['forcefield']['forcefield_kwargs'].get('hydrogenMass') * unit.amu
-                }
-                )
+        with open(self.config['paths']['init_system_with_posres_filepath'], 'w') as f:
+            f.write(XmlSerializer.serialize(self.system_with_posres))
 
-            gaff = GAFFTemplateGenerator(molecules=generator_molecules)
-            gaff.add_molecules(generator_molecules)
-            system_generator.forcefield.registerTemplateGenerator(gaff.generator)
-            system_generator.add_molecules(generator_molecules)
-
-            if self.config['preprocessing'].get('add_solvate', True):
-                complex.addSolvent(
-                    system_generator.forcefield,
-                    model = self.config['forcefield']['water_model'],
-                    padding = self.config['preprocessing']['box_padding'] * unit.nanometers,
-                    ionicStrength = self.config['preprocessing']['ionic_strength'] * unit.molar,
-                )
+    def process_complex(self) -> (Modeller, list):
+        """
+        Processes protein and ligand files to create a complex.
+        
+        Returns
+        -------
+        openmm.app.Modeller
+            The Modeller object containing the full complex.
+        list
+            A list of OpenFF molecule objects for the ligands.
+        """
+        log_info(logger, "Processing protein and ligand files to build complex.")
+        if self.config['preprocessing']['process_protein']:
+            all_nonstandard_res = []
+            complex_model = None
+            for i, protein_file in enumerate(self.config['paths']['raw_protein_files']):
+                original_chain_ids = self._get_chain_ids_from_file(protein_file)
+                fixer, nonstd = self.process_protein(protein_file)
+                all_nonstandard_res.extend(nonstd)
                 
-                with open(self.config['paths']['init_topology_filepath'], 'w') as outfile:
-                    app.PDBxFile.writeFile(complex.topology, complex.positions, outfile)
-                with open(self.config['paths']['init_topology_filepath'].replace('.cif', '.pdb'), 'w') as outfile:
-                    app.PDBFile.writeFile(complex.topology, complex.positions, outfile)
+                # Remap chain IDs in the fixer topology to match original file
+                fixer_chains = list(fixer.topology.chains())
+                if len(fixer_chains) == len(original_chain_ids):
+                    log_info(logger, f"Remapping chain IDs for {Path(protein_file).name} to: {original_chain_ids}")
+                    for chain, original_id in zip(fixer_chains, original_chain_ids):
+                        chain.id = original_id
+                else:
+                    log_warning(logger, f"Chain count mismatch for {Path(protein_file).name}. PDBFixer created {len(fixer_chains)} chains, but original file had {len(original_chain_ids)}. Cannot restore original chain IDs.")
+
+                if i == 0:
+                    complex_model = Modeller(fixer.topology, fixer.positions)
+                else:
+                    complex_model.add(fixer.topology, fixer.positions)
+
+            if all_nonstandard_res:
+                self.config['protein_info']['nonstandard_residues'] = list(set(all_nonstandard_res))
+        else:
+            complex_file = app.PDBxFile(self.config['paths']['init_topology_filepath'])
+            complex_model = Modeller(complex_file.topology, complex_file.positions)
+
+        openff_molecules = []
+        if self.config['preprocessing']['process_ligand']:
+            # Determine which chain IDs to use for ligands
+            if 'ligand_names' in self.config['ligand_info']:
+                ligand_chain_ids = self.config['ligand_info']['ligand_names']
+                if len(ligand_chain_ids) != len(self.config['paths']['raw_ligand_files']):
+                    raise ValueError("Length of 'ligand_names' in config must match the number of ligand files.")
+                log_info(logger, f"Using custom chain IDs for ligands: {ligand_chain_ids}")
+            else:
+                ligand_chain_ids = self.config['ligand_info']['ligand_ccd_codes']
+                log_info(logger, f"Using ligand CCD codes as chain IDs: {ligand_chain_ids}")
+
+            for i, (lig_file, lig_format, lig_name, lig_ccd) in enumerate(zip(
+                self.config['paths']['raw_ligand_files'],
+                self.config['ligand_info']['ligand_formats'],
+                self.config['ligand_info']['ligand_names'],
+                self.config['ligand_info']['ligand_ccd_codes']
+            )):
+                openmm_mol, openff_mol = self.process_ligand(lig_file, lig_format, lig_name, lig_ccd)
+                openff_molecules.append(openff_mol)
+                
+                # Add ligand to the complex, carefully setting chain and residue info
+                current_chain_count = len(list(complex_model.topology.chains()))
+                complex_model.add(openmm_mol.topology, openmm_mol.positions)
+                new_chain = list(complex_model.topology.chains())[current_chain_count]
+                
+                chain_id_to_use = ligand_chain_ids[i]
+                new_chain.id = chain_id_to_use
+                
+                for res in new_chain.residues():
+                    res.name = lig_ccd # Use CCD code for residue name
+                    # Rename atoms to be unique if they are generic
+                    atom_counts = defaultdict(int)
+                    for atom in res.atoms():
+                        if not atom.name:
+                            symbol = atom.element.symbol
+                            atom_counts[symbol] += 1
+                            atom.name = f"{symbol}{atom_counts[symbol]}"
+        return complex_model, openff_molecules
+        
+    def process_protein(self, input_filepath: str, ph: float = 7.4) -> (pdbfixer.PDBFixer, list):
+        """
+        Processes a protein file with PDBFixer to prepare it for simulation.
+
+        Parameters
+        ----------
+        input_filepath : str
+            Path to the input protein PDB file.
+        ph : float
+            The pH to use for adding missing hydrogens.
+
+        Returns
+        -------
+        pdbfixer.PDBFixer
+            The PDBFixer object after processing.
+        list
+            A list of non-standard residue names found.
+        """
+        log_info(logger, f"Processing protein: {input_filepath} with PDBFixer.")
+        fixer = pdbfixer.PDBFixer(filename=input_filepath)
+        fixer.findMissingResidues()
+        fixer.findNonstandardResidues()
+        # Replace non-standard residues with standard equivalents when possible
+        fixer.replaceNonstandardResidues()
+        fixer.findMissingAtoms()
+        
+        nonstandard_residues = [res[0].name for res in fixer.nonstandardResidues]
+
+        fixer.addMissingAtoms()
+        fixer.addMissingHydrogens(ph)
+        
+        output_dir = Path(self.config['paths']['output_dir'])
+        output_filepath = output_dir / f"{Path(input_filepath).stem}_fixed.pdb"
+        with open(output_filepath, 'w') as f:
+            app.PDBFile.writeFile(fixer.topology, fixer.positions, f, keepIds=True)
             
-                system = system_generator.create_system(complex.topology, molecules = generator_molecules)
-                with open(self.config['paths']['init_system_filepath'], 'w') as outfile:
-                    outfile.write(XmlSerializer.serialize(system))
+        return fixer, list(set(nonstandard_residues))
 
-                system_with_posres = add_backbone_posres(system, complex.positions, complex.topology.atoms(), self.config['simulation_params']['backbone_restraint_force'])
-                with open(self.config['paths']['init_system_with_posres_filepath'], 'w') as outfile:
-                    outfile.write(XmlSerializer.serialize(system_with_posres))
+    def process_ligand(self, input_filepath: str, input_format: str, input_name: str, residue_name: str) -> (Modeller, Molecule):
+        """
+        Processes a ligand file to prepare it for simulation.
 
-        self.model = complex
-        self.system = system
-        self.system_with_posres = system_with_posres
+        Parameters
+        ----------
+        input_filepath : str
+            Path to the ligand file.
+        input_format : str
+            The format of the ligand file (e.g., '.sdf').
+        input_name : str
+            The name of the ligand.
+        residue_name : str
+            The 3-letter residue name (CCD code) to assign to the ligand.
 
-    def set_reporters(self, simulation, 
-                      checkpoint_filepath: str,
-                      trajectory_filepath: str,
-                      state_data_reporter_filepath: str,
-                      checkpoint_interval: str,
-                      trajectory_interval: str,
-                      state_data_reporter_interval: str,
-                      total_steps: str,
-                      ):        
-        # Set CheckPoint Reporter
-        simulation.reporters.append(
-            app.checkpointreporter.CheckpointReporter(
-                file=checkpoint_filepath,
-                reportInterval = checkpoint_interval
-            )
+        Returns
+        -------
+        openmm.app.Modeller
+            The Modeller object for the ligand.
+        openff.toolkit.topology.Molecule
+            The OpenFF molecule object for the ligand.
+        """
+        log_info(logger, f"Processing ligand: {input_name} with residue name {residue_name}")
+        openff_mol = load_molecule_to_openmm(input_filepath, input_format)
+        openff_mol.name = residue_name
+        
+        if input_name in self.config['ligand_info']['ligand_charges']:
+            charges = self.config['ligand_info']['ligand_charges'][input_name]
+            openff_mol.partial_charges = unit.Quantity(np.array(charges), unit.elementary_charge)
+        else:
+            try:
+                openff_mol.assign_partial_charges(partial_charge_method="gasteiger", use_conformers=openff_mol.conformers)
+            except Exception:
+                openff_mol.assign_partial_charges(partial_charge_method="gasteiger")
+            self.config['ligand_info']['ligand_charges'][input_name] = openff_mol.partial_charges.m.tolist()
+
+        openmm_topology = openff_mol.to_topology().to_openmm()
+        openmm_positions = openff_mol.conformers[0].to_openmm()
+        openmm_model = Modeller(openmm_topology, openmm_positions)
+        
+        return openmm_model, openff_mol
+    
+    def run_pipeline(self):
+        """
+        Executes the full simulation pipeline according to the config.
+        """
+        log_info(logger, "Starting simulation pipeline.")
+        
+        if self.system is None:
+            self.set_system()
+            
+        pipeline_stages = ['warmup', 'backbone_removal', 'nvt', 'npt', 'production']
+        energy_stages = ['nvt_energy_calculation', 'npt_energy_calculation', 'production_energy_calculation']
+        
+        # Run main simulation stages
+        for stage in pipeline_stages:
+            if self.config['simulation_params'][stage].get('run', False):
+                if self.config['info']['simulation_status'][stage] == 'Not Done':
+                    log_info(logger, f"Running {stage} stage.")
+                    stage_method = getattr(self, stage)
+                    stage_method()
+                else:
+                    log_info(logger, f"Skipping {stage} stage as it is already marked as 'Done'.")
+            else:
+                log_info(logger, f"Skipping {stage} stage as it is not configured to run.")
+        
+        # Run energy calculation stages
+        for energy_stage in energy_stages:
+            base_stage = energy_stage.replace('_energy_calculation', '')
+            if self.config['simulation_params'].get('energy_calculation', {}).get('run', False):
+                if self.config['info']['simulation_status'][energy_stage] == 'Not Done':
+                    # Only run energy calculation if the corresponding base stage is done
+                    if self.config['info']['simulation_status'][base_stage] == 'Done':
+                        log_info(logger, f"Running {energy_stage} stage.")
+                        stage_method = getattr(self, energy_stage)
+                        stage_method()
+                    else:
+                        log_info(logger, f"Skipping {energy_stage} stage as {base_stage} is not completed.")
+                else:
+                    log_info(logger, f"Skipping {energy_stage} stage as it is already marked as 'Done'.")
+            else:
+                log_info(logger, f"Skipping {energy_stage} stage as energy calculation is not configured to run.")
+        log_info(logger, "Simulation pipeline finished.")
+
+    def _run_simulation_stage(self, stage_name: str, use_posres: bool = False, use_barostat: bool = False):
+        """
+        A general method to run a simulation stage (NVT, NPT, etc.).
+        
+        Parameters
+        ----------
+        stage_name : str
+            The name of the simulation stage (e.g., 'nvt').
+        use_posres : bool
+            Whether to use the system with position restraints.
+        use_barostat : bool
+            Whether to add a MonteCarloBarostat to the system.
+        """
+        params = self.config['simulation_params'][stage_name]
+        paths = self.config['paths']
+        
+        log_info(logger, f"--- Starting {stage_name.upper()} Stage ---")
+        
+        # 1. Setup Integrator
+        integrator = LangevinIntegrator(
+            params['temp'] * unit.kelvin,
+            params['friction'] / unit.picoseconds,
+            params['time_step'] * unit.femtoseconds
         )
 
-        # Set Trajectory Reporter
-        simulation.reporters.append(
-            app.xtcreporter.XTCReporter(
-                file = trajectory_filepath,
-                reportInterval = trajectory_interval,
-                enforcePeriodicBox = False,
-                append = os.path.exists(trajectory_filepath)
-            )
-        )
+        # 2. Setup System
+        system_to_use = self.system_with_posres if use_posres else deepcopy(self.system)
+        if use_barostat:
+            barostat = MonteCarloBarostat(params['pressure'] * unit.atmospheres, params['temp'] * unit.kelvin)
+            system_to_use.addForce(barostat)
 
-        # Add State Reporter
-        simulation.reporters.append(
-            app.StateDataReporter(
-                file = state_data_reporter_filepath,
-                reportInterval = state_data_reporter_interval,
-                step=True,
-                potentialEnergy=True,
-                kineticEnergy=True,
-                temperature=True,
-                volume=True,
-                progress=True,
-                remainingTime=True,
-                speed=True,
-                totalSteps = total_steps,
-                separator="\t",
-                append=os.path.exists(state_data_reporter_filepath)
-            )
+        # 3. Setup Simulation object
+        simulation = app.Simulation(self.model.topology, system_to_use, integrator, platform=self.platform)
+
+        # 4. Load state from previous stage if available
+        prev_checkpoint = self._get_previous_stage_checkpoint(stage_name)
+        checkpoint_path = paths['checkpoints'][f'{stage_name}_checkpoint_filepath']
+
+        if Path(checkpoint_path).exists():
+            log_info(logger, f"Loading checkpoint for {stage_name}: {checkpoint_path}")
+            simulation.loadCheckpoint(checkpoint_path)
+            steps_done = simulation.context.getStepCount()
+            steps_to_run = int(params['nsteps']) - steps_done
+        elif prev_checkpoint and Path(prev_checkpoint).exists():
+            log_info(logger, f"Loading checkpoint from previous stage: {prev_checkpoint}")
+            simulation.loadCheckpoint(prev_checkpoint)
+            simulation.context.setStepCount(0)
+            steps_to_run = int(params['nsteps'])
+        else:
+            log_info(logger, "No checkpoint found. Starting from initial positions.")
+            simulation.context.setPositions(self.model.positions)
+            simulation.minimizeEnergy()
+            simulation.context.setVelocitiesToTemperature(params['temp'] * unit.kelvin)
+            steps_to_run = int(params['nsteps'])
+        
+        if steps_to_run <= 0:
+            log_info(logger, f"Stage {stage_name} already completed. Skipping.")
+            self._save_final_topology(simulation, stage_name)
+            self.update_simulation_status(stage_name, 'Done')
+            return
+
+        # 5. Setup Reporters and get atom indices
+        atom_indices = self._get_atom_indices_for_trajectory(simulation)
+        self._set_reporters(
+            simulation=simulation,
+            stage_name=stage_name,
+            total_steps=params['nsteps'],
+            atom_indices=atom_indices
         )
-        return simulation
+        
+        # 6. Run Simulation
+        log_info(logger, f"Running {stage_name} for {steps_to_run} steps.")
+        simulation.step(steps_to_run)
+        
+        # 7. Save final state and topology
+        simulation.saveState(paths['states'][f'{stage_name}_state_filepath'])
+        self._save_final_topology(simulation, stage_name, atom_indices)
+        
+        self.update_simulation_status(stage_name, 'Done')
+        log_info(logger, f"--- {stage_name.upper()} Stage Finished ---")
+
+    def _get_previous_stage_checkpoint(self, stage_name: str) -> str:
+        """Gets the checkpoint file path from the preceding stage."""
+        stage_order = ['warmup', 'backbone_removal', 'nvt', 'npt', 'production']
+        try:
+            current_index = stage_order.index(stage_name)
+            if current_index == 0:
+                return None
+            prev_stage = stage_order[current_index - 1]
+            return self.config['paths']['checkpoints'][f'{prev_stage}_checkpoint_filepath']
+        except (ValueError, KeyError):
+            return None
 
     def warmup(self):
-        """Run warmup simulation with gradual temperature increase.
-        
-        This function performs a warmup simulation with backbone position restraints,
-        gradually increasing the temperature from initial to final temperature.
-        The simulation includes:
-        - Energy minimization
-        - Gradual heating in small temperature increments
-        - Regular state and checkpoint saving
-        
-        The simulation uses position restraints on the protein backbone to prevent
-        large conformational changes during the heating process.
         """
+        Performs a warmup simulation with gradual heating and position restraints.
+        """
+        params = self.config['simulation_params']['warmup']
+        paths = self.config['paths']
+        log_info(logger, "--- Starting WARMUP Stage (Gradual Heating) ---")
 
-        log_info(logger, "Starting warmup simulation with gradual heating")
-        # Log all warmup parameters
-        warmup_params = {
-            'initial_temperature': f"{self.config['simulation_params']['warmup']['init_temp']}K",
-            'final_temperature': f"{self.config['simulation_params']['warmup']['final_temp']}K",
-            'friction': f"{self.config['simulation_params']['warmup']['friction']}/ps",
-            'timestep': f"{self.config['simulation_params']['warmup']['time_step']}fs",
-            'heating_step': self.config['simulation_params']['warmup']['heating_step'],
-            'checkpoint_interval': self.config['simulation_params']['warmup']['checkpoint_interval'],
-            'trajectory_interval': self.config['simulation_params']['warmup']['trajectory_interval'],
-            'state_data_interval': self.config['simulation_params']['warmup']['state_data_reporter_interval']
-        }
-        log_info(logger, "WarmUp simulation parameters:")
-        for param, value in warmup_params.items():
-            log_info(logger, f"  {param}: {value}")
+        integrator = LangevinIntegrator(
+            params['init_temp'] * unit.kelvin,
+            params['friction'] / unit.picoseconds,
+            params['time_step'] * unit.femtoseconds
+        )
+        simulation = app.Simulation(self.model.topology, self.system_with_posres, integrator, platform=self.platform)
         
-        try:
-            # Initialize Integrator and Simulation
-            integrator = LangevinIntegrator(self.config['simulation_params']['warmup']['init_temp'] * unit.kelvin,
-                                            self.config['simulation_params']['warmup']['friction'] / unit.picoseconds,
-                                            self.config['simulation_params']['warmup']['time_step'] * unit.femtoseconds) 
-            log_debug(logger, f"Initialized Langevin integrator with initial temperature: {self.config['simulation_params']['warmup']['init_temp']}K")
-                    
-            warmup_simulation = app.Simulation(self.model.topology, self.system_with_posres, integrator, platform=self.platform)
-            log_debug(logger, "Created warmup simulation context with position restraints")
-            
-            heating_steps = (self.config['simulation_params']['warmup']['final_temp'] - self.config['simulation_params']['warmup']['init_temp']) * self.config['simulation_params']['warmup']['heating_step']
-            log_debug(logger, f"Calculated total heating steps: {heating_steps}")
-            
-            # Load Checkpoint if it exists
-            if os.path.exists(self.config['paths']['checkpoints']['warmup_checkpoint_filepath']):
-                warmup_simulation.loadCheckpoint(self.config['paths']['checkpoints']['warmup_checkpoint_filepath'])
-                nsteps_done = warmup_simulation.context.getStepCount() 
-                heatup_loops = self.config['simulation_params']['warmup']['final_temp'] - self.config['simulation_params']['warmup']['init_temp']
-                heatup_loops_done = nsteps_done / self.config['simulation_params']['warmup']['heating_step'] 
-                heatup_loops_to_run = heatup_loops - heatup_loops_done
-                initial_temperature = heatup_loops_done + self.config['simulation_params']['warmup']['init_temp']
-                log_info(logger, f"Loaded warmup checkpoint, continuing from step {nsteps_done} at temperature {initial_temperature}K")
-            else:
-                warmup_simulation.context.setPositions(self.model.positions)
-                log_debug(logger, "Starting energy minimization")
-                warmup_simulation.minimizeEnergy()
-                log_info(logger, "Completed energy minimization")
-                heatup_loops = self.config['simulation_params']['warmup']['final_temp'] - self.config['simulation_params']['warmup']['init_temp']
-                heatup_loops_done = 0
-                heatup_loops_to_run = heatup_loops
-                initial_temperature = self.config['simulation_params']['warmup']['init_temp']
-                log_info(logger, f"Starting fresh warmup from {initial_temperature}K")
-            
-            # Set Reporters
-            warmup_simulation = self.set_reporters(
-                simulation = warmup_simulation,
-                checkpoint_filepath = self.config['paths']['checkpoints']['warmup_checkpoint_filepath'],
-                trajectory_filepath = self.config['paths']['trajectories']['warmup_trajectory_filepath'],
-                state_data_reporter_filepath = self.config['paths']['state_reporters']['warmup_state_reporters_filepath'],
-                checkpoint_interval = self.config['simulation_params']['warmup']['checkpoint_interval'],
-                trajectory_interval = self.config['simulation_params']['warmup']['trajectory_interval'],
-                state_data_reporter_interval = self.config['simulation_params']['warmup']['state_data_reporter_interval'],
-                total_steps = heating_steps,
-            )
-            log_debug(logger, "Set up warmup simulation reporters")
-            
-            # Heating Loop
-            warmup_simulation.context.setVelocitiesToTemperature(initial_temperature * unit.kelvin)
-            log_info(logger, f"Starting heating loop with {heatup_loops_to_run} temperature increments")
-            
-            for i in tqdm(range(int(heatup_loops_to_run)), desc="Heating...", total=int(heatup_loops_to_run)):
-                warmup_simulation.step(self.config['simulation_params']['warmup']['heating_step'])
-                current_temperature = (initial_temperature + (i + int(heatup_loops_done))) * unit.kelvin
-                integrator.setTemperature(current_temperature)
-                log_debug(logger, f"Temperature increased to {current_temperature}")
-                
-                warmup_simulation.saveState(self.config['paths']['states']['warmup_state_filepath'])
-                warmup_simulation.saveCheckpoint(self.config['paths']['checkpoints']['warmup_checkpoint_filepath'])
-                log_debug(logger, f"Saved state and checkpoint at temperature {current_temperature}")
-            
-            with open(self.config['paths']['topologies']['warmup_topology_filepath'], "w") as cif_file:
-                app.PDBxFile.writeFile(
-                    warmup_simulation.topology,
-                    warmup_simulation.context.getState(getPositions=True, enforcePeriodicBox=False).getPositions(),
-                    file=cif_file,
-                    keepIds=True,
-                )
-            log_debug(logger, f"Saved final warmup topology to {self.config['paths']['topologies']['warmup_topology_filepath']}")
-            
-            self.update_simulation_status('warmup', 'Done')
-            log_info(logger, f"Warmup phase completed successfully, reached final temperature {self.config['simulation_params']['warmup']['final_temp']}K")
-            
-        except Exception as e:
-            error_msg = f"Error during warmup simulation: {str(e)}"
-            log_error(logger, error_msg)
-            raise
+        heating_steps_per_degree = params['heating_step']
+        temp_range = params['final_temp'] - params['init_temp']
+        total_heating_steps = temp_range * heating_steps_per_degree
+        
+        # Load checkpoint or initialize
+        checkpoint_path = paths['checkpoints']['warmup_checkpoint_filepath']
+        if Path(checkpoint_path).exists():
+            simulation.loadCheckpoint(checkpoint_path)
+            steps_done = simulation.context.getStepCount()
+            degrees_done = steps_done // heating_steps_per_degree
+            initial_temp = params['init_temp'] + degrees_done
+            log_info(logger, f"Resuming warmup from step {steps_done} at {initial_temp}K.")
+        else:
+            simulation.context.setPositions(self.model.positions)
+            log_info(logger, "Minimizing energy before warmup.")
+            simulation.minimizeEnergy()
+            initial_temp = params['init_temp']
+            log_info(logger, f"Starting fresh warmup from {initial_temp}K.")
+
+        # Setup reporters with atom indices
+        atom_indices = self._get_atom_indices_for_trajectory(simulation)
+        self._set_reporters(simulation, 'warmup', total_heating_steps, atom_indices)
+        
+        simulation.context.setVelocitiesToTemperature(initial_temp * unit.kelvin)
+        integrator.setTemperature(initial_temp * unit.kelvin)
+
+        temp_schedule = np.linspace(initial_temp, params['final_temp'], int(temp_range) + 1)
+        
+        for temp in tqdm(temp_schedule[1:], desc="Heating", unit="K"):
+            integrator.setTemperature(temp * unit.kelvin)
+            simulation.step(heating_steps_per_degree)
+        
+        simulation.saveState(paths['states']['warmup_state_filepath'])
+        self._save_final_topology(simulation, 'warmup', atom_indices)
+        self.update_simulation_status('warmup', 'Done')
+        log_info(logger, f"--- WARMUP Stage Finished at {params['final_temp']}K ---")
 
     def remove_backbone_constraints(self):
-        """Gradually remove backbone position restraints from the system.
-        
-        This function performs a simulation where the backbone position restraints
-        are gradually reduced to zero. The process involves:
-        - Starting with strong position restraints (99.02 kcal/mol/Å²)
-        - Gradually reducing the restraint force in small increments (0.98 kcal/mol/Å² per loop)
-        - Running multiple loops until restraints are completely removed
-        - Regular state and checkpoint saving
-        
-        This gradual removal helps the system adjust smoothly from the restrained
-        to the fully flexible state, preventing sudden structural changes.
         """
-        log_info(logger, "Starting backbone restraints removal phase")
-        
-        # Log all backbone removal parameters
-        backbone_params = {
-            'temperature': f"{self.config['simulation_params']['backbone_removal']['temp']}K",
-            'friction': f"{self.config['simulation_params']['backbone_removal']['friction']}/ps",
-            'timestep': f"{self.config['simulation_params']['backbone_removal']['time_step']}fs",
-            'total_steps': self.config['simulation_params']['backbone_removal']['nsteps'],
-            'number_of_loops': self.config['simulation_params']['backbone_removal']['nloops'],
-            'initial_restraint': "99.02 kcal/mol/Å²",
-            'restraint_decrement': "0.98 kcal/mol/Å²",
-            'checkpoint_interval': self.config['simulation_params']['backbone_removal']['checkpoint_interval'],
-            'trajectory_interval': self.config['simulation_params']['backbone_removal']['trajectory_interval'],
-            'state_data_interval': self.config['simulation_params']['backbone_removal']['state_data_reporter_interval']
-        }
-        
-        log_info(logger, "Backbone Restraints Removal parameters:")
-        for param, value in backbone_params.items():
-            log_info(logger, f"  {param}: {value}")
+        Performs a simulation to gradually remove backbone position restraints.
+        """
+        params = self.config['simulation_params']['backbone_removal']
+        paths = self.config['paths']
+        log_info(logger, "--- Starting BACKBONE CONSTRAINT REMOVAL Stage ---")
 
-        try:
-            # Initialize Integrator and Simulation
-            integrator = LangevinIntegrator(self.config['simulation_params']['backbone_removal']['temp'] * unit.kelvin,
-                                            self.config['simulation_params']['backbone_removal']['friction'] / unit.picoseconds,
-                                            self.config['simulation_params']['backbone_removal']['time_step'] * unit.femtoseconds)
-            log_debug(logger, f"Initialized Langevin integrator with temperature: {self.config['simulation_params']['backbone_removal']['temp']}K")
-            
-            backbone_simulation = app.Simulation(self.model.topology,
-                                                 self.system_with_posres,
-                                                 integrator,
-                                                 platform=self.platform)
-            log_debug(logger, "Created backbone restraints removal simulation context")
-            
-            if os.path.exists(self.config['paths']['checkpoints']['backbone_removal_checkpoint_filepath']):
-                backbone_simulation.loadCheckpoint(self.config['paths']['checkpoints']['backbone_removal_checkpoint_filepath'])
-                nsteps_done = backbone_simulation.context.getStepCount()
-                br_nsteps_to_run = self.config['simulation_params']['backbone_removal']['nsteps'] - nsteps_done
-                log_info(logger, f"Loaded backbone removal checkpoint, continuing from step {nsteps_done}")
-            elif os.path.exists(self.config['paths']['checkpoints']['warmup_checkpoint_filepath']):
-                backbone_simulation.loadCheckpoint(self.config['paths']['checkpoints']['warmup_checkpoint_filepath'])
-                backbone_simulation.context.setStepCount(0)
-                br_nsteps_done = 0
-                br_nsteps_to_run = self.config['simulation_params']['backbone_removal']['nsteps']
-                log_info(logger, "Loaded warmup checkpoint for backbone removal phase")
-            else:
-                backbone_simulation.context.setStepCount(0)
-                br_nsteps_done = 0
-                br_nsteps_to_run = self.config['simulation_params']['backbone_removal']['nsteps']
-                log_info(logger, "Starting backbone removal phase from scratch")
-
-            br_steps_in_loop = self.config['simulation_params']['backbone_removal']['nsteps'] / self.config['simulation_params']['backbone_removal']['nloops']
-            br_loops_to_run = self.config['simulation_params']['backbone_removal']['nloops'] - (br_nsteps_done / br_steps_in_loop)
-            br_loops_done = self.config['simulation_params']['backbone_removal']['nloops'] - br_loops_to_run
-            log_debug(logger, f"Calculated {br_loops_to_run} loops remaining, {br_steps_in_loop} steps per loop")
-
-            backbone_simulation = self.set_reporters(
-                simulation = backbone_simulation,
-                checkpoint_filepath = self.config['paths']['checkpoints']['backbone_removal_checkpoint_filepath'],
-                trajectory_filepath = self.config['paths']['trajectories']['backbone_removal_trajectory_filepath'],
-                state_data_reporter_filepath = self.config['paths']['state_reporters']['backbone_removal_state_reporters_filepath'],
-                checkpoint_interval = self.config['simulation_params']['backbone_removal']['checkpoint_interval'],
-                trajectory_interval = self.config['simulation_params']['backbone_removal']['trajectory_interval'],
-                state_data_reporter_interval = self.config['simulation_params']['backbone_removal']['state_data_reporter_interval'],
-                total_steps = self.config['simulation_params']['backbone_removal']['nsteps'],
-            )
-            log_debug(logger, "Set up backbone removal simulation reporters")
-
-            state = backbone_simulation.context.getState(getVelocities=True, getPositions=True)
-            positions = state.getPositions()
-            velocities = state.getVelocities()
-            backbone_simulation.context.setPositions(positions)
-            backbone_simulation.context.setVelocities(velocities)
-            backbone_simulation.context.setVelocitiesToTemperature(self.config['simulation_params']['backbone_removal']['temp'] * unit.kelvin)
-            log_debug(logger, "Set positions and velocities")
-
-            initial_restraint = float(99.02 - (int(br_loops_done) * 0.98))
-            backbone_simulation.context.setParameter('k', (initial_restraint * unit.kilocalories_per_mole / unit.angstroms ** 2))
-            log_info(logger, f"Starting restraint removal loops with initial force constant: {initial_restraint} kcal/mol/Å²")
-
-            for i in tqdm(range(int(br_loops_to_run)), desc="Removing Backbone Constraints...", total=int(br_loops_to_run)):
-                backbone_simulation.step(br_steps_in_loop)
-                current_restraint = float(99.02 - ((i + br_loops_done) * 0.98))
-                backbone_simulation.context.setParameter('k', (current_restraint * unit.kilocalories_per_mole / unit.angstroms ** 2))
-                log_debug(logger, f"Reduced restraint force constant to {current_restraint} kcal/mol/Å²")
-
-            backbone_simulation.context.setParameter('k', 0)
-            log_info(logger, "Restraints completely removed (force constant = 0)")
-            
-            backbone_simulation.saveState(self.config['paths']['states']['backbone_removal_state_filepath'])
-            log_debug(logger, f"Saved final state to {self.config['paths']['states']['backbone_removal_state_filepath']}")
-            
-            with open(self.config['paths']['topologies']['backbone_removal_topology_filepath'], "w") as cif_file:
-                app.PDBxFile.writeFile(
-                    backbone_simulation.topology,
-                    backbone_simulation.context.getState(getPositions=True, enforcePeriodicBox=False).getPositions(),
-                    file=cif_file,
-                    keepIds=True,
-                )
-            log_debug(logger, f"Saved final topology to {self.config['paths']['topologies']['backbone_removal_topology_filepath']}")
-            
-            self.update_simulation_status('backbone_removal', 'Done')
-            log_info(logger, "Backbone restraints removal phase completed successfully")
-
-        except Exception as e:
-            error_msg = f"Error during backbone restraints removal: {str(e)}"
-            log_error(logger, error_msg)
-            raise
-
-    def nvt(self):
         integrator = LangevinIntegrator(
-            self.config['simulation_params']['nvt']['temp'] * unit.kelvin, 
-            self.config['simulation_params']['nvt']['friction'] / unit.picoseconds,
-            self.config['simulation_params']['nvt']['time_step'] * unit.femtoseconds
-            )
+            params['temp'] * unit.kelvin,
+            params['friction'] / unit.picoseconds,
+            params['time_step'] * unit.femtoseconds
+        )
+        simulation = app.Simulation(self.model.topology, self.system_with_posres, integrator, platform=self.platform)
 
-        nvt_simulation = app.Simulation(
-            self.model.topology,
-            self.system,
-            integrator,
-            platform=self.platform)
-        
-        if os.path.exists(self.config['paths']['checkpoints']['nvt_checkpoint_filepath']):
-            # Load Backbone Checkpoint if possible
-            nvt_simulation.loadCheckpoint(self.config['paths']['checkpoints']['nvt_checkpoint_filepath'])
-            steps_done = nvt_simulation.context.getStepCount()
-            steps_to_run = self.config['simulation_params']['nvt']['nsteps'] - steps_done
-        elif os.path.exists(self.config['paths']['checkpoints']['warmup_checkpoint_filepath']):
-            # Load Warmed Up Checkpoint if possible
-            nvt_simulation.loadCheckpoint(self.config['paths']['checkpoints']['warmup_checkpoint_filepath'])
-            nvt_simulation.context.setStepCount(0)
-            steps_to_run = self.config['simulation_params']['nvt']['nsteps']
+        # Load state
+        prev_checkpoint = self._get_previous_stage_checkpoint('backbone_removal')
+        checkpoint_path = paths['checkpoints']['backbone_removal_checkpoint_filepath']
+
+        if Path(checkpoint_path).exists():
+            simulation.loadCheckpoint(checkpoint_path)
+        elif Path(prev_checkpoint).exists():
+            simulation.loadCheckpoint(prev_checkpoint)
+            simulation.context.setStepCount(0)
         else:
-            nvt_simulation.context.setStepCount(0)
-            steps_to_run = self.config['simulation_params']['nvt']['nsteps']
-        
-                # Set Reporters
-        nvt_simulation = self.set_reporters(
-            simulation = nvt_simulation,
-            checkpoint_filepath = self.config['paths']['checkpoints']['nvt_checkpoint_filepath'],
-            trajectory_filepath = self.config['paths']['trajectories']['nvt_trajectory_filepath'],
-            state_data_reporter_filepath = self.config['paths']['state_reporters']['nvt_state_reporters_filepath'],
-            checkpoint_interval = self.config['simulation_params']['nvt']['checkpoint_interval'],
-            trajectory_interval = self.config['simulation_params']['nvt']['trajectory_interval'],
-            state_data_reporter_interval = self.config['simulation_params']['nvt']['state_data_reporter_interval'],
-            total_steps = self.config['simulation_params']['nvt']['nsteps'],
-        )
+            raise FileNotFoundError("Cannot start backbone removal without a warmup checkpoint.")
 
-        state = nvt_simulation.context.getState(getVelocities=True, getPositions=True)
+        n_loops = int(params['nloops'])
+        steps_per_loop = int(params['nsteps']) // n_loops
+        initial_force = self.config['simulation_params']['backbone_restraint_force']
+        force_decrement = initial_force / n_loops
 
-        positions = state.getPositions()
-        velocities = state.getVelocities()
-        nvt_simulation.context.setPositions(positions)
-        nvt_simulation.context.setVelocities(velocities)
+        # Setup reporters with atom indices
+        atom_indices = self._get_atom_indices_for_trajectory(simulation=simulation)
+        self._set_reporters(simulation, 'backbone_removal', params['nsteps'], atom_indices)
 
-        nvt_simulation.context.setVelocitiesToTemperature(self.config['simulation_params']['nvt']['temp'] * unit.kelvin)
-        nvt_simulation.context.setParameter('k', 0)
-        nvt_simulation.step(steps_to_run)
+        for i in tqdm(range(n_loops), desc="Removing Constraints"):
+            force_k = (initial_force - (i + 1) * force_decrement) * unit.kilocalories_per_mole / unit.angstroms**2
+            simulation.context.setParameter('k', force_k)
+            simulation.step(steps_per_loop)
         
-        nvt_simulation.saveState(self.config['paths']['states']['nvt_state_filepath'])
+        simulation.context.setParameter('k', 0.0) # Ensure it's fully off
         
-        with open(self.config['paths']['topologies']['nvt_topology_filepath'], "w") as cif_file:
-            app.PDBxFile.writeFile(
-                nvt_simulation.topology,
-                nvt_simulation.context.getState(getPositions=True, enforcePeriodicBox=False).getPositions(),
-                file=cif_file,
-                keepIds=True,
-            )
-
-    def npt(self):
-        integrator = LangevinIntegrator(
-            self.config['simulation_params']['npt']['temp'] * unit.kelvin,
-            self.config['simulation_params']['npt']['friction'] / unit.picoseconds,
-            self.config['simulation_params']['npt']['time_step'] * unit.femtoseconds
-        )
-        
-        self.system.addForce(MonteCarloBarostat(self.config['simulation_params']['npt']['pressure'] * unit.atmospheres, self.config['simulation_params']['npt']['temp'] * unit.kelvin))
-        npt_simulation = app.Simulation(
-            self.model.topology,
-            self.system,
-            integrator,
-            platform=self.platform)
-        
-        if os.path.exists(self.config['paths']['checkpoints']['npt_checkpoint_filepath']):
-            npt_simulation.loadCheckpoint(self.config['paths']['checkpoints']['npt_checkpoint_filepath'])
-            steps_done = npt_simulation.context.getStepCount()
-            steps_to_run = self.config['simulation_params']['npt']['nsteps'] - steps_done
-        elif os.path.exists(self.config['paths']['checkpoints']['nvt_checkpoint_filepath']):
-            npt_simulation.loadCheckpoint(self.config['paths']['checkpoints']['nvt_checkpoint_filepath'])
-            npt_simulation.context.setStepCount(0)
-            steps_to_run = self.config['simulation_params']['npt']['nsteps']
-        else:
-            npt_simulation.context.setStepCount(0)
-            steps_to_run = self.config['simulation_params']['npt']['nsteps']
-        
-        npt_simulation = self.set_reporters(
-            simulation = npt_simulation,
-            checkpoint_filepath = self.config['paths']['checkpoints']['npt_checkpoint_filepath'],
-            trajectory_filepath = self.config['paths']['trajectories']['npt_trajectory_filepath'],
-            state_data_reporter_filepath = self.config['paths']['state_reporters']['npt_state_reporters_filepath'],
-            checkpoint_interval = self.config['simulation_params']['npt']['checkpoint_interval'],
-            trajectory_interval = self.config['simulation_params']['npt']['trajectory_interval'],
-            state_data_reporter_interval = self.config['simulation_params']['npt']['state_data_reporter_interval'],
-            total_steps = self.config['simulation_params']['npt']['nsteps'],
-        )
-        
-        state = npt_simulation.context.getState(getVelocities=True, getPositions=True)
-        positions = state.getPositions()
-        velocities = state.getVelocities()
-        npt_simulation.context.setPositions(positions)
-        npt_simulation.context.setVelocities(velocities)
-        npt_simulation.context.setVelocitiesToTemperature(self.config['simulation_params']['npt']['temp'] * unit.kelvin)
-        npt_simulation.context.setParameter('k', 0)
-        npt_simulation.step(steps_to_run)
-
-        npt_simulation.saveState(self.config['paths']['states']['npt_state_filepath'])   
-        
-        with open(self.config['paths']['topologies']['npt_topology_filepath'], "w") as cif_file:
-            app.PDBxFile.writeFile(
-                npt_simulation.topology,
-                npt_simulation.context.getState(getPositions=True, enforcePeriodicBox=False).getPositions(),
-                file=cif_file,
-                keepIds=True,
-            )
+        simulation.saveState(paths['states']['backbone_removal_state_filepath'])
+        self._save_final_topology(simulation, 'backbone_removal', atom_indices)
+        self.update_simulation_status('backbone_removal', 'Done')
+        log_info(logger, "--- BACKBONE CONSTRAINT REMOVAL Stage Finished ---")
     
+    def nvt(self):
+        self._run_simulation_stage('nvt')
+        
+    def npt(self):
+        self._run_simulation_stage('npt', use_barostat=True)
+
     def production(self):
-        integrator = LangevinIntegrator(
-            self.config['simulation_params']['production']['temp'] * unit.kelvin,
-            self.config['simulation_params']['production']['friction'] / unit.picoseconds,
-            self.config['simulation_params']['production']['time_step'] * unit.femtoseconds
-        )
-
-        self.system.addForce(MonteCarloBarostat(self.config['simulation_params']['production']['pressure'] * unit.atmospheres, self.config['simulation_params']['production']['temp'] * unit.kelvin))
+        self._run_simulation_stage('production', use_barostat=True)
+    
+    def nvt_energy_calculation(self):
+        """
+        Calculate interaction energies using the NVT topology and trajectory.
+        """
+        self._calculate_stage_energies('nvt')
+    
+    def npt_energy_calculation(self):
+        """
+        Calculate interaction energies using the NPT topology and trajectory.
+        """
+        self._calculate_stage_energies('npt')
+    
+    def production_energy_calculation(self):
+        """
+        Calculate interaction energies using the production topology and trajectory.
+        """
+        self._calculate_stage_energies('production')
+    
+    def _calculate_stage_energies(self, stage: str):
+        """
+        Calculate interaction energies for a specific simulation stage.
         
-        production_simulation = app.Simulation(
-            self.model.topology,
-            self.system,
-            integrator,
-            platform=self.platform
-        )
-
-        if os.path.exists(self.config['paths']['checkpoints']['production_checkpoint_filepath']):
-            production_simulation.loadCheckpoint(self.config['paths']['checkpoints']['production_checkpoint_filepath'])
-            steps_done = production_simulation.context.getStepCount()
-            steps_to_run = self.config['simulation_params']['production']['nsteps'] - steps_done
-        elif os.path.exists(self.config['paths']['checkpoints']['npt_checkpoint_filepath']):
-            production_simulation.loadCheckpoint(self.config['paths']['checkpoints']['npt_checkpoint_filepath'])
-            production_simulation.context.setStepCount(0)
-            steps_to_run = self.config['simulation_params']['production']['nsteps']
-        else:
-            production_simulation.context.setStepCount(0)
-            steps_to_run = self.config['simulation_params']['production']['nsteps']
-
-        production_simulation = self.set_reporters(
-            simulation = production_simulation,
-            checkpoint_filepath = self.config['paths']['checkpoints']['production_checkpoint_filepath'],
-            trajectory_filepath = self.config['paths']['trajectories']['production_trajectory_filepath'],
-            state_data_reporter_filepath = self.config['paths']['state_reporters']['production_state_reporters_filepath'],
-            checkpoint_interval = self.config['simulation_params']['production']['checkpoint_interval'],
-            trajectory_interval = self.config['simulation_params']['production']['trajectory_interval'],
-            state_data_reporter_interval = self.config['simulation_params']['production']['state_data_reporter_interval'],
-            total_steps = self.config['simulation_params']['production']['nsteps'],
-        )
+        Parameters
+        ----------
+        stage : str
+            The simulation stage ('nvt', 'npt', or 'production').
+        """
+        log_info(logger, f"--- Starting {stage.upper()} ENERGY CALCULATION Stage ---")
         
-        state = production_simulation.context.getState(getVelocities=True, getPositions=True)
-        positions = state.getPositions()
-        velocities = state.getVelocities()
-        production_simulation.context.setPositions(positions)
-        production_simulation.context.setVelocities(velocities)
-        production_simulation.context.setVelocitiesToTemperature(self.config['simulation_params']['production']['temp'] * unit.kelvin)
-        production_simulation.context.setParameter('k', 0)
-        production_simulation.step(steps_to_run)
+        # Get paths
+        topology_path = Path(self.config['paths']['topologies'][f'{stage}_topology_filepath'])
+        trajectory_path = Path(self.config['paths']['trajectories'][f'{stage}_trajectory_filepath'])
+        forcefield_dirpath = Path(self.config['paths']['molecule_forcefield_dirpath'])
+        energy_output_dir = Path(self.config['paths']['output_dir']) / 'energies'
         
-        production_simulation.saveState(self.config['paths']['states']['production_state_filepath'])
+        # Check if required files exist
+        if not topology_path.exists():
+            error_msg = f"{stage.upper()} topology file not found: {topology_path}"
+            log_error(logger, error_msg)
+            raise FileNotFoundError(error_msg)
         
-        with open(self.config['paths']['topologies']['production_topology_filepath'], "w") as cif_file:
-            app.PDBxFile.writeFile(
-                production_simulation.topology,
-                production_simulation.context.getState(getPositions=True, enforcePeriodicBox=False).getPositions(),
-                file=cif_file,
-                keepIds=True,
+        if not trajectory_path.exists():
+            error_msg = f"{stage.upper()} trajectory file not found: {trajectory_path}"
+            log_error(logger, error_msg)
+            raise FileNotFoundError(error_msg)
+        
+        if not forcefield_dirpath.exists():
+            error_msg = f"Forcefield directory not found: {forcefield_dirpath}"
+            log_error(logger, error_msg)
+            raise FileNotFoundError(error_msg)
+        
+        # Create energy output directory
+        energy_output_dir.mkdir(parents=True, exist_ok=True)
+        
+        try:
+            log_info(logger, f"Using {stage.upper()} topology: {topology_path}")
+            log_info(logger, f"Using {stage.upper()} trajectory: {trajectory_path}")
+            log_info(logger, f"Using forcefield directory: {forcefield_dirpath}")
+            log_info(logger, f"Energy output directory: {energy_output_dir}")
+            
+            # Calculate interaction energies
+            calculate_interaction_energies(
+                topology_filepath=topology_path,
+                trajectory_filepath=trajectory_path,
+                forcefield_filepath = forcefield_dirpath / f'system_forcefield.pkl',
+                output_dir=energy_output_dir,
+                stage=stage
             )
+            
+            log_info(logger, f"{stage.upper()} energy calculation completed successfully")
+            self.update_simulation_status(f'{stage}_energy_calculation', 'Done')
+            
+        except Exception as e:
+            error_msg = f"Error during {stage.upper()} energy calculation: {str(e)}"
+            log_error(logger, error_msg)
+            raise RuntimeError(error_msg)
+        
+        log_info(logger, f"--- {stage.upper()} ENERGY CALCULATION Stage Finished ---")
+    
+    def _get_atom_indices_for_trajectory(self, simulation: app.Simulation = None, topology: app.Topology = None) -> list:
+        """
+        Get atom indices for proteins and ligands, excluding hydrogens, water, and ions.
+        
+        Parameters
+        ----------
+        simulation : app.Simulation
+            The OpenMM simulation object.
+            
+        Returns
+        -------
+        list
+            List of atom indices to include in trajectory.
+        """
+        assert simulation is not None or topology is not None, "Either simulation or topology must be provided"
+
+        # Get atom indices for proteins and ligands, excluding hydrogens, water, and ions
+        protein_chains = self.config['protein_info'].get('protein_chain_ids', [])
+        ligand_chains = self.config['ligand_info'].get('ligand_names', [])
+        allowed_chains = protein_chains + ligand_chains
+        
+        # Define residues to exclude
+        excluded_residues = {'HOH', 'WAT', 'TIP3', 'TIP4', 'TIP5', 'SPC', 'SPCE', 'CL', 'NA'}
+        
+        atom_indices = []
+        excluded_counts = {'hydrogens': 0, 'excluded_residues': 0, 'wrong_chains': 0}
+        
+        if simulation is not None:
+            topology = simulation.topology
+        elif topology is not None:
+            topology = topology
+        else:
+            raise ValueError("Either simulation or topology must be provided")
+
+        for atom in topology.atoms():
+            # Skip excluded residues (water, ions)
+            if atom.residue.name in excluded_residues:
+                excluded_counts['excluded_residues'] += 1
+                continue
+            # Only include atoms from allowed chains (protein and ligand chains)
+            if atom.residue.chain.id in allowed_chains:
+                atom_indices.append(atom.index)
+            else:
+                excluded_counts['wrong_chains'] += 1
+        
+        total_atoms = topology.getNumAtoms()
+        log_info(logger, f"Atom filtering summary: Total atoms: {total_atoms}, "
+                        f"Selected: {len(atom_indices)}, "
+                        f"Excluded - Hydrogens: {excluded_counts['hydrogens']}, "
+                        f"Water/Ions: {excluded_counts['excluded_residues']}, "
+                        f"Wrong chains: {excluded_counts['wrong_chains']}")
+        log_info(logger, f"Allowed chains: {allowed_chains}")
+        log_debug(logger, f"Excluded residue types: {excluded_residues}")
+        
+        return atom_indices
+
+    def _set_reporters(self, simulation: app.Simulation, stage_name: str, total_steps: int, atom_indices: list):
+        """
+        Sets up reporters for a given simulation stage.
+        """
+        params = self.config['simulation_params'][stage_name]
+        paths = self.config['paths']
+        
+        checkpoint_path = paths['checkpoints'][f'{stage_name}_checkpoint_filepath']
+        trajectory_path = paths['trajectories'][f'{stage_name}_trajectory_filepath']
+        state_data_path = paths['state_reporters'][f'{stage_name}_state_reporters_filepath']
+        forces_path = paths['forces'][f'{stage_name}_forces_filepath']
+        hessian_path = paths['hessian'][f'{stage_name}_hessian_filepath']
+
+        # Checkpoint Reporter
+        simulation.reporters.append(app.CheckpointReporter(
+            file=checkpoint_path,
+            reportInterval=params['checkpoint_interval']
+        ))
+        
+        # Trajectory Reporter (XTC with atom subset)
+        simulation.reporters.append(own_XTCReporter(
+            file=trajectory_path,
+            reportInterval=params['trajectory_interval'],
+            atomSubset=atom_indices,
+            enforcePeriodicBox=False,
+            append=Path(trajectory_path).exists()
+        ))
+        
+        # Forces Reporter
+        if self.config['simulation_params'].get('save_forces', False):
+            simulation.reporters.append(ForceReporter(
+                file=forces_path,
+                reportInterval=params['state_data_reporter_interval'],
+                total_steps=total_steps,
+                atom_indices=atom_indices
+            ))
+
+        # Hessian Reporter
+        if self.config['simulation_params'].get('save_hessian', False):
+            simulation.reporters.append(HessianReporter(
+                file=hessian_path,
+                reportInterval=params['state_data_reporter_interval'],
+                total_steps=total_steps,
+                atom_indices=atom_indices,
+                simulation=simulation
+            ))
+
+        # State Data Reporter
+        simulation.reporters.append(app.StateDataReporter(
+            file=state_data_path,
+            reportInterval=params['state_data_reporter_interval'],
+            step=True, potentialEnergy=True, kineticEnergy=True, temperature=True,
+            volume=True, progress=True, remainingTime=True, speed=True,
+            totalSteps=total_steps, separator='\t', append=Path(state_data_path).exists()
+        ))
+        log_debug(logger, f"Reporters set for stage: {stage_name}")
+
+    def _save_final_topology(self, simulation: app.Simulation, stage_name: str, atom_indices: list = None):
+        """Saves the final topology of a simulation stage."""
+        topology_path = self.config['paths']['topologies'][f'{stage_name}_topology_filepath']
+        log_info(logger, f"Saving final topology for stage {stage_name} to {topology_path}")
+        positions = simulation.context.getState(getPositions=True, enforcePeriodicBox=False).getPositions()
+        
+        topology = simulation.topology
+        biotite_topology = biotite_openmm.from_topology(topology)
+        # Convert OpenMM positions from nanometers to angstroms for biotite
+        positions_angstrom = positions.value_in_unit(unit.angstrom)
+        biotite_topology.coord = np.array(positions_angstrom, dtype=np.float32)
+        
+        cif_file = pdbx.CIFFile()
+        pdbx.set_structure(cif_file, biotite_topology, include_bonds=True)
+        cif_file.write(topology_path)
