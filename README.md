@@ -247,55 +247,6 @@ output_directory/
 └── {system_id}_init_complex.cif     # Initial system structure
 ```
 
-## 🧬 Bond Preservation
-
-This pipeline preserves ligand bond connectivity throughout simulations:
-
-- **Input processing**: Loads ligands with OpenFF/RDKit maintaining bond orders
-- **Topology saving**: Exports CIF files with explicit bond information  
-- **Multi-format output**: SDF and MOL2 files preserve bond connectivity
-- **Metadata tracking**: YAML files contain bond and charge information
-
-
-## 🖥️ SLURM Cluster Usage
-
-For high-throughput simulations on SLURM clusters, see the provided SLURM integration scripts in the `scripts/` directory.
-
-## 🐛 Troubleshooting
-
-**Common Issues**:
-
-1. **CUDA errors**: Ensure CUDA toolkit matches OpenMM version
-2. **Memory issues**: Reduce trajectory saving frequency or use smaller systems
-3. **Bond connectivity lost**: Verify input files have explicit bonds (SDF/MOL2)
-4. **Checkpoint corruption**: Delete checkpoint files to restart from beginning
-
-**Debugging**:
-```bash
-python scripts/run_simulation.py --config config.yaml --log-level DEBUG
-```
-
-## 📚 Citation
-
-If you use this pipeline in your research, please cite:
-
-```bibtex
-@software{MolecularDynamicsPipeline,
-  title={Molecular Dynamics Pipeline},
-  author={Maciej Wisniewski},
-  year={2024},
-  url={https://github.com/maciejwisniewski-drugdiscovery/MolecularDynamicsPipeline}
-}
-```
-
-## 🤝 Contributing
-
-Contributions are welcome! Please see our contribution guidelines and submit pull requests.
-
-## 📄 License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
 ## 📞 Support
 
 For questions and support:
