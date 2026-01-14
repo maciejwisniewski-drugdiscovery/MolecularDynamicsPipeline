@@ -730,6 +730,13 @@ class MDSimulation:
             openff_mol.partial_charges = unit.Quantity(np.array(charges), unit.elementary_charge)
         else:
             try:
+                from rdkit import Chem
+                from rdkit.Chem import AllChem
+                from openff.toolkit.topology import Molecule
+                rdmol = Chem.SDMolSupplier(input_filepath,removeHs=False)[0]
+                rdmol = Chem.AddHs(rdmol)
+                AllChem.AssignAtomChiralTags(rdmol)
+                openff_mol = Molecule.from_rdkit(rdmol, allow_undefined_stereo=True)
                 openff_mol.assign_partial_charges(partial_charge_method="gasteiger", use_conformers=openff_mol.conformers)
             except Exception:
                 openff_mol.assign_partial_charges(partial_charge_method="gasteiger")
