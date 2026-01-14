@@ -1,13 +1,19 @@
+[build-system]
+requires = ["setuptools >= 61.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "moleculardynamicspipeline"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
+
 dependencies = [
     "biotite==1.2.0",
     "black>=25.12.0",
     "cachetools>=6.2.4",
+    "cuda-toolkit[all]>=13.1.0",
     "flake8>=7.3.0",
     "importlib-resources>=6.5.2",
     "jinja2>=3.1.6",
@@ -15,12 +21,15 @@ dependencies = [
     "numpy<2",
     "openbabel-wheel>=3.1.1.22",
     "openff-toolkit",
-    "openmm>=8.4.0.post2",
+    "openff-units",
+    "openff-utilities",
+    "openmm>=8.2.0",
     "openmmforcefields",
     "pandas>=2.3.3",
     "pathlib>=1.0.1",
     "pdb2pqr>=3.7.1",
     "pdbfixer",
+    "pip>=25.3",
     "plinder>=0.2.25",
     "plotly>=6.5.1",
     "pytest>=9.0.2",
@@ -30,9 +39,17 @@ dependencies = [
     "scipy>=1.17.0",
     "seaborn>=0.13.2",
     "tqdm>=4.67.1",
+    "validators>=0.35.0",
+    "xmltodict>=1.0.2",
 ]
 
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["molecular_dynamics_pipeline*"]
+
 [tool.uv.sources]
-openmmforcefields = { git = "https://github.com/openmm/openmmforcefields.git" }
 openff-toolkit = { git = "https://github.com/openforcefield/openff-toolkit.git" }
 pdbfixer = { git = "https://github.com/openmm/pdbfixer.git" }
+openff-utilities = { git = "https://github.com/openforcefield/openff-utilities.git" }
+openff-units = { git = "https://github.com/openforcefield/openff-units.git" }
+openmmforcefields = { git = "https://github.com/openmm/openmmforcefields.git", rev = "0.14.2" }
