@@ -8,7 +8,7 @@ from pathlib import Path
 import logging
 
 from molecular_dynamics_pipeline.utils.logger import setup_logger, log_info, log_error
-from molecular_dynamics_pipeline.simulation.simulation_refactored import MDSimulation
+from molecular_dynamics_pipeline.simulation.simulation import MDSimulation
 
 
 def create_system_config_from_template(template_config: str, protein_path: str, ligand_path: str, output_dir: str, ligand_id: str | None = None) -> str:
