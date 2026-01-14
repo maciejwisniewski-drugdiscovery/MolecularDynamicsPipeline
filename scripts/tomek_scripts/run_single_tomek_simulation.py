@@ -19,7 +19,7 @@ def create_system_config_from_template(template_config: str, protein_path: str, 
     ligand_path = str(Path(ligand_path).resolve())
     base_ligand_name = ligand_id if ligand_id else Path(ligand_path).stem
     system_id = f"{Path(protein_path).stem}__{base_ligand_name}"
-    sim_id_suffix = 'bound_state' if config['info'].get('bound_state', True) else 'unbound_state'
+    sim_id_suffix = 'bound_state'
     config['info']['system_id'] = system_id
     config['info']['simulation_id'] = f"{system_id}_simulation_{sim_id_suffix}"
 

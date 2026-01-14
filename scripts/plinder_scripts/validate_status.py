@@ -39,13 +39,8 @@ def _check_for_errors(sim_dir: Path, system_id: str, configured_stages: List[str
 def get_simulation_id(plinder_id: str, config_template: str) -> str:
     """Get the simulation ID from a PLINDER ID and config template."""
     try:
-        with open(config_template, 'r') as f:
-            config = yaml.safe_load(f)
-        
-        if config['info']['bound_state'] == True:
-            return f"{plinder_id}_simulation_bound_state"
-        else:
-            return f"{plinder_id}_simulation_unbound_state"
+        return f"{plinder_id}_simulation_bound_state"
+
     except Exception as e:
         log_error(logger, f"Error reading config template {config_template}: {str(e)}")
         return f"{plinder_id}_simulation_bound_state"  # Default fallback

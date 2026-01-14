@@ -32,11 +32,8 @@ def check_if_simulation_exists(plinder_id, output_dir, config_template):
     with open(config_template, 'r') as f:
         config = yaml.safe_load(f)
  
-    if config['info']['bound_state'] == True:
-        config['info']['simulation_id'] = f"{plinder_id}_simulation_bound_state"
-    else:
-        config['info']['simulation_id'] = f"{plinder_id}_simulation_unbound_state"
-
+    config['info']['simulation_id'] = f"{plinder_id}_simulation_bound_state"
+    
     system_config_filepath = os.path.join(output_dir, config['info']['simulation_id'], 'config.yaml')
 
     output_dir = os.path.join(output_dir, config['info']['simulation_id'])
