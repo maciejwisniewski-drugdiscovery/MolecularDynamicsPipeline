@@ -223,8 +223,10 @@ class MDSimulation:
         if 'ligand_info' not in self.config:
             self.config['ligand_info'] = {}
 
-        ligand_files = self.config['paths'].get('raw_ligand_files', [])
-        ligand_names = [Path(l).stem for l in ligand_files]
+        ligand_files = self.config['paths'].get('raw_ligand_files')
+        if not ligand_files:
+            ligand_files = []
+        ligand_names = [Path(l).stem for l in ligand_files] if ligand_files else []
         
         self.config['ligand_info'].setdefault('n_lig', len(ligand_files))
         self.config['ligand_info'].setdefault('ligand_names', ligand_names)
@@ -520,7 +522,6 @@ class MDSimulation:
         system_generator = SystemGenerator(
             forcefields=[
                 self.config['forcefield']['proteinFF'],
-                self.config['forcefield']['nucleicFF'],
                 self.config['forcefield']['waterFF'],
                 gaff.gaff_xml_filename
             ],
@@ -533,7 +534,7 @@ class MDSimulation:
         # gaff_gen = GAFFTemplateGenerator(molecules=generator_molecules, forcefield=self.config['forcefield']['ligandFF'])
         # system_generator.forcefield.registerTemplateGenerator(gaff_gen.generator)
 
-        if self.config['preprocessing'].get('add_solvate', True):
+        if self.config['preprocessing'].get('add_solvent', True):
             log_info(logger, "Adding solvent to the system.")
             complex_model.addSolvent(
                 system_generator.forcefield,

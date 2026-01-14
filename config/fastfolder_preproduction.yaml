@@ -1,0 +1,78 @@
+info:
+  system_id: fastfolder_preproduction
+  simulation_id: fastfolder_preproduction
+  use_plinder_index: False
+
+# Preprocessing parameters
+preprocessing:
+  process_protein: True             # Process the protein with PDBFixer  
+  process_ligand: False             # Process the ligand with OpenFF
+  add_solvent: False                 # Add Solvent to the system, Default: True
+
+# Forcefield parameters
+forcefield:
+  proteinFF: "amber14-all.xml"
+  nucleicFF: "amber14/DNA.OL15.xml"
+  ligandFF: "gaff-2.11"
+  waterFF: "amber14/tip3pfb.xml"
+  water_model: "tip3p"
+  forcefield_kwargs:
+    rigidWater: True
+    removeCMMotion: False
+    hydrogenMass: 1.5
+
+# Simulation parameters
+simulation_params:
+  backbone_restraint_force: 100.0     # kcal/mol/A^2
+  save_forces: true
+  save_hessian: false
+  save_charges: true
+  save_sigam: true
+  save_epsilon: true
+  platform:
+    type: "CPU"
+    devices: '0'
+  warmup:
+    init_temp: 50.0                   # K - the starting temperature
+    final_temp: 300.0                 # K - the final temperature
+    friction: 1.0                     # ps^-1 - the friction coefficient
+    time_step: 2.0                    # fs - the time step
+    heating_step: 100                 # how many steps to WarmUp Simulation by 1K
+    checkpoint_interval: 50
+    trajectory_interval: 50
+    state_data_reporter_interval: 50
+  backbone_removal:
+    temp: 300.0
+    friction: 1.0
+    time_step: 2.0
+    nsteps: 500000
+    nloops: 100
+    checkpoint_interval: 100
+    trajectory_interval: 100
+    state_data_reporter_interval: 100
+  nvt:
+    temp: 300.0
+    friction: 1.0
+    time_step: 2.0
+    nsteps: 500000
+    checkpoint_interval: 100
+    trajectory_interval: 100
+    state_data_reporter_interval: 100
+  npt:
+    temp: 300.0
+    pressure: 1.0
+    friction: 1.0
+    time_step: 2.0
+    nsteps: 500000 # 1_000_000 fs => 2000 
+    checkpoint_interval: 100
+    trajectory_interval: 100
+    state_data_reporter_interval: 100
+
+# File paths and formats
+paths:
+  raw_protein_files: 
+    - /mnt/raid/mwisniewski/projects/phd/Poseidon/example.pdb
+  raw_ligand_files: False
+  output_dir: /mnt/raid/mwisniewski/data/molecular_dynamics/fastfolders/preproduction
+
+
