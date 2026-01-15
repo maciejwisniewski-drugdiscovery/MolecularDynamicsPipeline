@@ -30,7 +30,7 @@ simulation_params:
   save_forces: true
   save_hessian: false
   save_charges: true
-  save_sigam: true
+  save_sigma: true
   save_epsilon: true
   platform:
     type: "CUDA"

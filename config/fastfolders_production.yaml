@@ -1,16 +1,15 @@
 info:
   system_id: False
   simulation_id: False
-  use_plinder_index: True
-  bound_state: True
+  use_plinder_index: False
   
 # Preprocessing parameters
 preprocessing:
-  process_protein: true             # Process the protein with PDBFixer  
-  process_ligand: true              # Process the ligand with OpenFF
-  add_solvent: true                 # Add Solvent to the system, Default: True
-  ionic_strength: 0.15              # Molar
-  box_padding: 1.0                  # nm
+  process_protein: True  
+  process_ligand: False
+  add_solvent: True
+  ionic_strength: 0.15
+  box_padding: 1.0
 
 # Forcefield parameters
 forcefield:
@@ -36,11 +35,11 @@ simulation_params:
     type: "CUDA"
     devices: '0'
   warmup:
-    init_temp: 50.0                   # K - the starting temperature
-    final_temp: 300.0                 # K - the final temperature
-    friction: 1.0                     # ps^-1 - the friction coefficient
-    time_step: 2.0                    # fs - the time step
-    heating_step: 100                 # how many steps to WarmUp Simulation by 1K
+    init_temp: 50.0
+    final_temp: 300.0
+    friction: 1.0
+    time_step: 2.0
+    heating_step: 100
     checkpoint_interval: 100
     trajectory_interval: 100
     state_data_reporter_interval: 100
@@ -57,7 +56,7 @@ simulation_params:
     temp: 300.0
     friction: 1.0
     time_step: 2.0
-    nsteps: 500_000
+    nsteps: 50_000
     checkpoint_interval: 1000
     trajectory_interval: 1000
     state_data_reporter_interval: 1000
@@ -66,7 +65,7 @@ simulation_params:
     pressure: 1.0
     friction: 1.0
     time_step: 2.0
-    nsteps: 500_000
+    nsteps: 50_000
     checkpoint_interval: 1_000
     trajectory_interval: 1_000
     state_data_reporter_interval: 1_000
